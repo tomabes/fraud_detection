@@ -1,0 +1,3478 @@
+> #############################################################
+> # Data Mining
+> # Fraud Detection Project
+> #############################################################
+> 
+> rm(list = ls())
+> 
+> # FALSE to keep Risk_Score in dataset
+> DROP_RISK_SCORE <- FALSE
+> # FALSE to keep Failed_Transaction_Count_7d in dataset
+> DROP_FAILED_TXN_COUNT_7D <- FALSE
+> 
+> #####################
+> # Required Packages #
+> #####################
+> 
+> library(ggplot2)
+> library(dplyr)
+> library(rlang)
+> library(doBy)
+> library(rpart)
+> library(rpart.plot)
+> library(class)
+> library(caret)
+> library(randomForest)
+> library(klaR)
+> library(pROC)
+> library(corrplot)
+> library(xgboost)
+> library(glmnet)
+> library(Rtsne)
+> library(uwot)
+> 
+> ################
+> # Data Loading #
+> ################
+> 
+> script_dir <- getwd()
+> data_path <- "data/raw/synthetic_raw_cleaned.csv"
+> fraud.data <- read.csv(data_path, na.strings = c("", "NA", "NULL"))
+> 
+> output_dir <- file.path(script_dir, "output")
+> dir.create(output_dir, recursive = TRUE)
+> plots_dir <- file.path(output_dir, "plots")
+> dir.create(plots_dir, recursive = TRUE)
+> 
+> if (isTRUE(DROP_RISK_SCORE) && "Risk_Score" %in% names(fraud.data)) {
++   fraud.data$Risk_Score <- NULL
++ }
+> 
+> if (isTRUE(DROP_FAILED_TXN_COUNT_7D) && "Failed_Transaction_Count_7d" %in% names(fraud.data)) {
++   fraud.data$Failed_Transaction_Count_7d <- NULL
++ }
+> 
+> cols <- c(
++   "Transaction_Type",
++   "Device_Type",
++   "Location",
++   "Merchant_Category",
++   "IP_Address_Flag",
++   "Previous_Fraudulent_Activity",
++   "Card_Type",
++   "Authentication_Method",
++   "Is_Weekend",
++   "Fraud_Label"
++ )
+> 
+> fraud.data <- fraud.data %>%
++   mutate(
++     target = factor(ifelse(Fraud_Label == 1, "FRAUD", "LEGIT"),
++                     levels = c("LEGIT", "FRAUD")),
++     across(where(is.character), as.factor)
++   )
+> 
+> ####################
+> # Data Exploration #
+> ####################
+> 
+> head(fraud.data)
+  Transaction_ID   User_ID Transaction_Amount Transaction_Type Timestamp
+1      TXN_33553 USER_1834              39.79              POS        19
+2       TXN_9427 USER_7875               1.19    Bank Transfer         4
+3        TXN_199 USER_2734              28.96           Online        15
+4      TXN_12447 USER_2617             254.32   ATM Withdrawal         0
+5      TXN_39489 USER_2014              31.28              POS        23
+6      TXN_42724 USER_6852             168.55           Online        20
+  Account_Balance Device_Type Location Merchant_Category IP_Address_Flag
+1        93213.17    Computer   Sydney            Travel               0
+2        75725.25      Mobile New York          Clothing               0
+3         1588.96      Tablet   Mumbai       Restaurants               0
+4        76807.20      Tablet New York          Clothing               0
+5        92354.66      Mobile   Mumbai       Electronics               0
+6        33236.94    Computer    Tokyo       Restaurants               0
+  Previous_Fraudulent_Activity Daily_Transaction_Count Avg_Transaction_Amount_7d
+1                            0                       7                    437.63
+2                            0                      13                    478.76
+3                            0                      14                     50.01
+4                            0                       8                    182.48
+5                            1                      14                    328.69
+6                            0                       3                    226.85
+  Failed_Transaction_Count_7d  Card_Type Card_Age Transaction_Distance
+1                           3       Amex       65               883.17
+2                           4 Mastercard      186              2203.36
+3                           4       Visa      226              1909.29
+4                           4       Visa       76              1311.86
+5                           4 Mastercard      140               966.98
+6                           2   Discover       51              1725.64
+  Authentication_Method Risk_Score Is_Weekend Fraud_Label target
+1             Biometric     0.8494          0           0  LEGIT
+2              Password     0.0959          0           1  FRAUD
+3             Biometric     0.8400          0           1  FRAUD
+4                   OTP     0.7935          0           1  FRAUD
+5              Password     0.3819          1           1  FRAUD
+6                   OTP     0.0504          0           0  LEGIT
+> str(fraud.data)
+'data.frame':	50000 obs. of  22 variables:
+ $ Transaction_ID              : Factor w/ 50000 levels "TXN_0","TXN_1",..: 26174 49366 11002 2723 32768 36364 918 43889 34937 29956 ...
+ $ User_ID                     : Factor w/ 8963 levels "USER_1000","USER_1001",..: 834 6850 1733 1617 1014 5831 4041 3651 584 8463 ...
+ $ Transaction_Amount          : num  39.79 1.19 28.96 254.32 31.28 ...
+ $ Transaction_Type            : Factor w/ 4 levels "ATM Withdrawal",..: 4 2 3 1 4 3 4 1 1 4 ...
+ $ Timestamp                   : int  19 4 15 0 23 20 1 3 22 17 ...
+ $ Account_Balance             : num  93213 75725 1589 76807 92355 ...
+ $ Device_Type                 : Factor w/ 3 levels "Computer","Mobile",..: 1 2 3 3 2 1 3 3 3 2 ...
+ $ Location                    : Factor w/ 5 levels "London","Mumbai",..: 4 3 2 3 2 5 1 1 5 2 ...
+ $ Merchant_Category           : Factor w/ 5 levels "Clothing","Electronics",..: 5 1 4 1 2 4 4 4 1 5 ...
+ $ IP_Address_Flag             : int  0 0 0 0 0 0 0 0 0 0 ...
+ $ Previous_Fraudulent_Activity: int  0 0 0 0 1 0 0 0 0 0 ...
+ $ Daily_Transaction_Count     : int  7 13 14 8 14 3 2 3 7 6 ...
+ $ Avg_Transaction_Amount_7d   : num  438 479 50 182 329 ...
+ $ Failed_Transaction_Count_7d : int  3 4 4 4 4 2 2 4 3 1 ...
+ $ Card_Type                   : Factor w/ 4 levels "Amex","Discover",..: 1 3 4 4 3 2 3 2 4 3 ...
+ $ Card_Age                    : int  65 186 226 76 140 51 168 182 24 124 ...
+ $ Transaction_Distance        : num  883 2203 1909 1312 967 ...
+ $ Authentication_Method       : Factor w/ 4 levels "Biometric","OTP",..: 1 3 1 2 3 2 3 1 1 4 ...
+ $ Risk_Score                  : num  0.8494 0.0959 0.84 0.7935 0.3819 ...
+ $ Is_Weekend                  : int  0 0 0 0 1 0 0 0 1 0 ...
+ $ Fraud_Label                 : int  0 1 1 1 1 0 0 1 0 0 ...
+ $ target                      : Factor w/ 2 levels "LEGIT","FRAUD": 1 2 2 2 2 1 1 2 1 1 ...
+> 
+> print(table(fraud.data$Fraud_Label))
+
+    0     1 
+33933 16067 
+> print(round(prop.table(table(fraud.data$Fraud_Label)) * 100, 2))
+
+    0     1 
+67.87 32.13 
+> 
+> for (col in cols) {
++   print(dplyr::count(fraud.data, !!rlang::sym(col), sort = TRUE))
++ }
+  Transaction_Type     n
+1              POS 12549
+2           Online 12546
+3   ATM Withdrawal 12453
+4    Bank Transfer 12452
+  Device_Type     n
+1      Tablet 16779
+2      Mobile 16640
+3    Computer 16581
+  Location     n
+1    Tokyo 10208
+2   Mumbai  9994
+3   London  9945
+4   Sydney  9938
+5 New York  9915
+  Merchant_Category     n
+1          Clothing 10033
+2         Groceries 10019
+3            Travel 10015
+4       Restaurants  9976
+5       Electronics  9957
+  IP_Address_Flag     n
+1               0 47490
+2               1  2510
+  Previous_Fraudulent_Activity     n
+1                            0 45080
+2                            1  4920
+   Card_Type     n
+1 Mastercard 12693
+2       Visa 12560
+3       Amex 12419
+4   Discover 12328
+  Authentication_Method     n
+1             Biometric 12591
+2                   PIN 12586
+3              Password 12457
+4                   OTP 12366
+  Is_Weekend     n
+1          0 35018
+2          1 14982
+  Fraud_Label     n
+1           0 33933
+2           1 16067
+> 
+> print(summary(fraud.data$Transaction_Amount))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+   0.00   28.68   69.66   99.41  138.85 1174.14 
+> print(summary(fraud.data$Timestamp))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+   0.00    6.00   12.00   11.52   17.00   23.00 
+> print(summary(fraud.data$Account_Balance))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  500.5 25356.0 50384.4 50294.1 75115.1 99998.3 
+> print(summary(fraud.data$Daily_Transaction_Count))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  1.000   4.000   7.000   7.485  11.000  14.000 
+> print(summary(fraud.data$Avg_Transaction_Amount_7d))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+   10.0   132.1   256.1   255.3   378.0   500.0 
+> print(summary(fraud.data$Failed_Transaction_Count_7d))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  0.000   1.000   2.000   2.004   3.000   4.000 
+> print(summary(fraud.data$Card_Age))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+      1      60     120     120     180     239 
+> print(summary(fraud.data$Transaction_Distance))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+   0.25 1256.50 2490.78 2499.16 3746.39 4999.93 
+> print(summary(fraud.data$Failed_Transaction_Count_7d))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  0.000   1.000   2.000   2.004   3.000   4.000 
+> 
+> print(sum(duplicated(fraud.data$Transaction_ID)))
+[1] 0
+> 
+> na_count <- sum(is.na(fraud.data))
+> print(paste("Total NA:", na_count))
+[1] "Total NA: 0"
+> 
+> fraud.data %>%
++   group_by(Failed_Transaction_Count_7d) %>%
++   summarise(
++     count = n(),
++     fraud_rate = mean(Fraud_Label)
++   ) %>%
++   arrange(Failed_Transaction_Count_7d) %>%
++   mutate(
++     fraud_rate = round(fraud_rate * 100, 1)
++   ) %>%
++   print()
+# A tibble: 5 × 3
+  Failed_Transaction_Count_7d count fraud_rate
+                        <int> <int>      <dbl>
+1                           0 10014       15.4
+2                           1  9919       15.4
+3                           2  9897       14.5
+4                           3 10216       15.7
+5                           4  9954      100  
+> 
+> unique(fraud.data$Failed_Transaction_Count_7d)
+[1] 3 4 2 1 0
+> 
+> ##############################
+> #   Feature Enineering       #
+> ##############################
+> 
+> if (FALSE) {
++   build_features <- function(df, night_hours = c(1, 2, 3, 4, 5)) {
++     df %>%
++       mutate(row_id = row_number()) %>%
++       group_by(User_ID) %>%
++       group_modify(~{
++         g <- .x %>% arrange(row_id)
++         n <- nrow(g)
++         
++         g$is_new_location <- sapply(seq_len(n), function(i) {
++           if (i == 1) 0 else as.integer(!(g$Location[i] %in% g$Location[1:(i - 1)]))
++         })
++         g$is_new_device <- sapply(seq_len(n), function(i) {
++           if (i == 1) 0 else as.integer(!(g$Device_Type[i] %in% g$Device_Type[1:(i - 1)]))
++         })
++         g$is_new_card <- sapply(seq_len(n), function(i) {
++           if (i == 1) 0 else as.integer(!(g$Card_Type[i] %in% g$Card_Type[1:(i - 1)]))
++         })
++         g$is_new_txn_type <- sapply(seq_len(n), function(i) {
++           if (i == 1) 0 else as.integer(!(g$Transaction_Type[i] %in% g$Transaction_Type[1:(i - 1)]))
++         })
++         g$is_location_in_top2_history <- sapply(seq_len(n), function(i) {
++           if (i == 1) {
++             0
++           } else {
++             prev_locs <- g$Location[1:(i - 1)]
++             if (length(prev_locs) == 0) {
++               0
++             } else {
++               loc_counts <- sort(table(prev_locs), decreasing = TRUE)
++               top2_locs <- names(loc_counts)[1:min(2, length(loc_counts))]
++               as.integer(g$Location[i] %in% top2_locs)
++             }
++           }
++         })
++         g$is_night_txn <- ifelse(g$Timestamp %in% night_hours, 1, 0)
++         g
++       }) %>%
++       ungroup() %>%
++       arrange(row_id) %>%
++       select(-row_id)
++   }
++ }
+> 
+> ##############################
+> #   Heatmaps                 #
+> ##############################
+> 
+> # Correlation matrix
+> eda_numeric <- fraud.data[, sapply(fraud.data, is.numeric), drop = FALSE]
+> eda_numeric <- eda_numeric[, setdiff(names(eda_numeric), "Fraud_Label"), drop = FALSE]
+> eda_numeric_sd <- sapply(eda_numeric, sd, na.rm = TRUE)
+> eda_numeric <- eda_numeric[, eda_numeric_sd > 0 & !is.na(eda_numeric_sd), drop = FALSE]
+> eda_corr <- cor(eda_numeric, use = "pairwise.complete.obs")
+> pdf(file.path(plots_dir, "numeric_corrplot.pdf"), width = 11, height = 8.5)
+> corrplot::corrplot(
++   eda_corr,
++   method = "color",
++   type = "upper",
++   tl.cex = 0.8,
++   addCoef.col = "black",
++   number.cex = 0.7
++ )
+> dev.off()
+null device 
+          1 
+> 
+> # Pearson for features and Fraud_Label
+> y_fl <- fraud.data$Fraud_Label
+> feat_names <- names(eda_numeric)
+> r_tgt <- rep(NA_real_, length(feat_names))
+> names(r_tgt) <- feat_names
+> for (nm in feat_names) {
++   r_tgt[nm] <- cor(eda_numeric[[nm]], y_fl, use = "pairwise.complete.obs")
++ }
+> corr_tgt_df <- data.frame(feature = feat_names, r = as.numeric(r_tgt), stringsAsFactors = FALSE)
+> corr_tgt_df$feature <- reorder(corr_tgt_df$feature, corr_tgt_df$r)
+> 
+> pdf(file.path(plots_dir, "numeric_corr_with_target.pdf"), width = 11, height = 8.5)
+> print(
++   ggplot(corr_tgt_df, aes(x = r, y = feature, fill = r > 0)) +
++     geom_col(width = 0.7) +
++     geom_vline(xintercept = 0, linewidth = 0.3, color = "gray40") +
++     scale_fill_manual(values = c(`FALSE` = "#e07a7a", `TRUE` = "#2ca3a3"), guide = "none") +
++     labs(x = "r", y = NULL, title = "Numeric correlation with target") +
++     theme_bw() +
++     theme(panel.grid.major.y = element_blank())
++ )
+> dev.off()
+null device 
+          1 
+> 
+> ###############################
+> # PCA                         #
+> ###############################
+> 
+> numeric_cols <- names(fraud.data)[sapply(fraud.data, is.numeric)]
+> numeric_cols <- setdiff(numeric_cols, "Fraud_Label")
+> 
+> fraud.numeric <- fraud.data[, numeric_cols]
+> 
+> set.seed(2568)
+> pairs_sample_idx <- sample(seq_len(nrow(fraud.numeric)), min(1500, nrow(fraud.numeric)))
+> pdf(file.path(plots_dir, "pairs_numeric.pdf"), width = 11, height = 8.5)
+> pairs(fraud.numeric[pairs_sample_idx, ], pch = 19, cex = 0.4)
+> dev.off()
+null device 
+          1 
+> 
+> pca_prcomp <- prcomp(fraud.numeric, scale. = TRUE)
+> print(summary(pca_prcomp))
+Importance of components:
+                          PC1    PC2     PC3    PC4     PC5     PC6    PC7     PC8
+Standard deviation     1.0117 1.0094 1.00750 1.0046 1.00383 1.00122 0.9998 0.99790
+Proportion of Variance 0.0853 0.0849 0.08459 0.0841 0.08397 0.08354 0.0833 0.08298
+Cumulative Proportion  0.0853 0.1702 0.25479 0.3389 0.42286 0.50640 0.5897 0.67269
+                           PC9    PC10    PC11    PC12
+Standard deviation     0.99661 0.99280 0.99070 0.98356
+Proportion of Variance 0.08277 0.08214 0.08179 0.08062
+Cumulative Proportion  0.75546 0.83759 0.91938 1.00000
+> 
+> pdf(file.path(plots_dir, "pca_scree_plot.pdf"), width = 11, height = 8.5)
+> explained_var <- (pca_prcomp$sdev^2) / sum(pca_prcomp$sdev^2)
+> plot(
++   explained_var,
++   type = "b",
++   pch = 19,
++   xlab = "Principal Component",
++   ylab = "Explained Variance Ratio",
++   main = "PCA Scree Plot"
++ )
+> dev.off()
+null device 
+          1 
+> 
+> pdf(file.path(plots_dir, "pca_pc1_pc2_by_target.pdf"), width = 11, height = 8.5)
+> point_cols <- ifelse(fraud.data$target == "FRAUD", "red3", "darkgreen")
+> plot(
++   pca_prcomp$x[, 1],
++   pca_prcomp$x[, 2],
++   col = grDevices::adjustcolor(point_cols, alpha.f = 0.35),
++   pch = 16,
++   xlab = "PC1",
++   ylab = "PC2",
++   main = "PCA: PC1 vs PC2"
++ )
+> legend(
++   "topright",
++   legend = c("LEGIT", "FRAUD"),
++   col = c("darkgreen", "red3"),
++   pch = 16,
++   bty = "n"
++ )
+> dev.off()
+null device 
+          1 
+> 
+> pdf(file.path(plots_dir, "pca_pc1_pc3_by_target.pdf"), width = 11, height = 8.5)
+> point_cols <- ifelse(fraud.data$target == "FRAUD", "red3", "darkgreen")
+> plot(
++   pca_prcomp$x[, 1],
++   pca_prcomp$x[, 3],
++   col = grDevices::adjustcolor(point_cols, alpha.f = 0.35),
++   pch = 16,
++   xlab = "PC1",
++   ylab = "PC3",
++   main = "PCA: PC1 vs PC3"
++ )
+> legend(
++   "topright",
++   legend = c("LEGIT", "FRAUD"),
++   col = c("darkgreen", "red3"),
++   pch = 16,
++   bty = "n"
++ )
+> dev.off()
+null device 
+          1 
+> 
+> #########################
+> # K-means            #
+> #########################
+> 
+> fraud.zs <- as.data.frame(scale(fraud.numeric))
+> 
+> set.seed(2568)
+> cl <- kmeans(fraud.zs, centers = 2, nstart = 20)
+> cat("\nKMeans summary\n")
+
+KMeans summary
+> cat("Cluster sizes:\n")
+Cluster sizes:
+> print(cl$size)
+[1] 14982 35018
+> cat("Cluster centers:\n")
+Cluster centers:
+> print(round(cl$centers, 3))
+  Transaction_Amount Timestamp Account_Balance IP_Address_Flag
+1              0.002     0.003           0.001           0.008
+2             -0.001    -0.001           0.000          -0.003
+  Previous_Fraudulent_Activity Daily_Transaction_Count Avg_Transaction_Amount_7d
+1                       -0.001                  -0.009                     0.012
+2                        0.000                   0.004                    -0.005
+  Failed_Transaction_Count_7d Card_Age Transaction_Distance Risk_Score Is_Weekend
+1                      -0.005    0.005               -0.016     -0.008      1.529
+2                       0.002   -0.002                0.007      0.003     -0.654
+> cat("Total withinss:", round(cl$tot.withinss, 3), "\n")
+Total withinss: 549974.5 
+> cat("Between/Total SS:", round(cl$betweenss / cl$totss, 3), "\n")
+Between/Total SS: 0.083 
+> cat("True class vs cluster:\n")
+True class vs cluster:
+> print(table(TrueClass = fraud.data$target, Cluster = cl$cluster))
+         Cluster
+TrueClass     1     2
+    LEGIT 10167 23766
+    FRAUD  4815 11252
+> 
+> pdf(file.path(plots_dir, "kmeans_clusters_scaled.pdf"), width = 11, height = 8.5)
+> km_cols <- c("#377eb8", "#e41a1c")
+> plot(
++   pca_prcomp$x[, 1],
++   pca_prcomp$x[, 2],
++   col = km_cols[cl$cluster],
++   pch = 19,
++   main = "KMeans (k=2) — PC1 vs PC2",
++   xlab = "PC1",
++   ylab = "PC2"
++ )
+Warning message:
+In title(...) :
+  for 'KMeans (k=2) — PC1 vs PC2' in 'mbcsToSbcs': - substituted for — (U+2014)
+> legend("topright", legend = c("Cluster 1", "Cluster 2"), col = km_cols, pch = 19, bty = "n")
+> dev.off()
+null device 
+          1 
+> 
+> set.seed(2568)
+> hc_idx <- sample(seq_len(nrow(fraud.zs)), min(1000, nrow(fraud.zs)))
+> hc <- hclust(dist(fraud.zs[hc_idx, ]), method = "ave")
+> pdf(file.path(plots_dir, "hclust_sample.pdf"), width = 11, height = 8.5)
+> plot(hc, main = "Hierarchical Clustering")
+> dev.off()
+null device 
+          1 
+> 
+> ####################################
+> # Class weightening and resampling #
+> ####################################
+> 
+> model_df <- fraud.data %>%
++   dplyr::select(-Transaction_ID, -User_ID, -Fraud_Label)
+> 
+> set.seed(2568)
+> train_main_idx <- caret::createDataPartition(model_df$target, p = 0.6, list = FALSE)
+> train_df <- model_df[train_main_idx, ]
+> tmp_df <- model_df[-train_main_idx, ]
+> 
+> val_idx <- caret::createDataPartition(tmp_df$target, p = 0.5, list = FALSE)
+> val_df <- tmp_df[val_idx, ]
+> test_df <- tmp_df[-val_idx, ]
+> 
+> class_weights <- c(LEGIT = 1, FRAUD = 2)
+> train_case_weights <- class_weights[as.character(train_df$target)]
+> 
+> # resampling for methods without native weights
+> set.seed(2568)
+> RESAMPLE_FRAUD_WEIGHT <- 3
+> resample_prob <- ifelse(train_df$target == "FRAUD", RESAMPLE_FRAUD_WEIGHT, 1)
+> resample_idx <- sample(
++   seq_len(nrow(train_df)),
++   size = nrow(train_df),
++   replace = TRUE,
++   prob = resample_prob
++ )
+> train_resampled <- train_df[resample_idx, ]
+> 
+> cat("\nClass proportions before resampling:\n")
+
+Class proportions before resampling:
+> print(prop.table(table(train_df$target)))
+
+   LEGIT    FRAUD 
+0.678644 0.321356 
+> 
+> cat("\nClass proportions after resampling:\n")
+
+Class proportions after resampling:
+> print(prop.table(table(train_resampled$target)))
+
+    LEGIT     FRAUD 
+0.4094864 0.5905136 
+> 
+> cat("\nClass counts before resampling:\n")
+
+Class counts before resampling:
+> print(table(train_df$target))
+
+LEGIT FRAUD 
+20360  9641 
+> 
+> cat("\nClass counts after resampling:\n")
+
+Class counts after resampling:
+> print(table(train_resampled$target))
+
+LEGIT FRAUD 
+12285 17716 
+> 
+> fraud_label <- "FRAUD"
+> threshold_grid <- seq(0.05, 0.95, by = 0.05)
+> 
+> #####################
+> # Service functions #
+> #####################
+> 
+> compute_metrics <- function(y_true, y_prob, threshold = 0.5, positive = "FRAUD") {
++   y_true <- factor(y_true, levels = c("LEGIT", "FRAUD"))
++   y_pred <- factor(ifelse(y_prob >= threshold, positive, "LEGIT"), levels = c("LEGIT", "FRAUD"))
++   tp <- sum(y_pred == positive & y_true == positive)
++   fp <- sum(y_pred == positive & y_true != positive)
++   fn <- sum(y_pred != positive & y_true == positive)
++   tn <- sum(y_pred != positive & y_true != positive)
++   recall <- tp / (tp + fn)
++   precision <- tp / (tp + fp)
++   f1 <- 2 * recall * precision / (recall + precision)
++   beta <- 2
++   f2 <- (1 + beta^2) * recall * precision / (beta^2 * precision + recall)
++   data.frame(
++     recall = recall,
++     precision = precision,
++     f1 = f1,
++     f2 = f2,
++     tp = tp,
++     fp = fp,
++     fn = fn,
++     tn = tn
++   )
++ }
+> 
+> print_confusion_matrix <- function(y_true, y_prob, threshold, model_name, dataset_name, positive = "FRAUD") {
++   y_true <- factor(y_true, levels = c("LEGIT", "FRAUD"))
++   y_pred <- factor(ifelse(y_prob >= threshold, positive, "LEGIT"), levels = c("LEGIT", "FRAUD"))
++   cm <- table(True = y_true, Pred = y_pred)
++   print(paste("Confusion matrix:", model_name, "-", dataset_name, "(threshold =", round(threshold, 3), ")"))
++   print(cm)
++ }
+> 
+> make_roc_df <- function(y_true, y_prob, dataset_name, model_name, positive = "FRAUD") {
++   y_num <- ifelse(as.character(y_true) == positive, 1, 0)
++   roc_obj <- pROC::roc(response = y_num, predictor = y_prob, direction = "<")
++   data.frame(
++     fpr = 1 - roc_obj$specificities,
++     tpr = roc_obj$sensitivities,
++     dataset = dataset_name,
++     model = model_name,
++     auc = as.numeric(pROC::auc(roc_obj))
++   )
++ }
+> 
+> make_f1_threshold_df <- function(y_true, y_prob, positive = "FRAUD") {
++   out <- data.frame(threshold = numeric(0), f1 = numeric(0))
++   for (th in threshold_grid) {
++     m <- compute_metrics(y_true, y_prob, threshold = th, positive = positive)
++     out <- rbind(out, data.frame(threshold = th, f1 = m$f1))
++   }
++   out
++ }
+> 
+> #################
+> # Decision Tree #
+> #################
+> 
+> tree_model <- rpart(
++   target ~ .,
++   data = train_df,
++   method = "class",
++   weights = train_case_weights,
++   control = rpart.control(
++     cp = 0.001,
++     minsplit = 10,
++     minbucket = 5,
++     maxdepth = 5
++   )
++ )
+> pdf(file.path(plots_dir, "rpart_tree.pdf"), width = 11, height = 8.5)
+> rpart.plot(tree_model)
+> dev.off()
+null device 
+          1 
+> 
+> pdf(file.path(plots_dir, "rpart_cp_plot.pdf"), width = 11, height = 8.5)
+> plotcp(tree_model)
+> dev.off()
+null device 
+          1 
+> 
+> tree_prob_train <- predict(tree_model, newdata = train_df, type = "prob")[, fraud_label]
+> tree_prob_val <- predict(tree_model, newdata = val_df, type = "prob")[, fraud_label]
+> tree_prob_test <- predict(tree_model, newdata = test_df, type = "prob")[, fraud_label]
+> 
+> ########
+> # KNN  #
+> ########
+> 
+> knn_predictor_cols <- setdiff(names(train_df), "target")
+> knn_formula <- as.formula(paste("~", paste(knn_predictor_cols, collapse = " + ")))
+> knn_dummies <- caret::dummyVars(knn_formula, data = train_resampled, fullRank = FALSE)
+> 
+> knn_x_train <- as.data.frame(predict(knn_dummies, newdata = train_resampled))
+> knn_x_train_eval <- as.data.frame(predict(knn_dummies, newdata = train_df))
+> knn_x_val <- as.data.frame(predict(knn_dummies, newdata = val_df))
+> knn_x_test <- as.data.frame(predict(knn_dummies, newdata = test_df))
+> 
+> knn_pp <- caret::preProcess(knn_x_train, method = c("center", "scale"))
+> knn_x_train <- as.matrix(predict(knn_pp, knn_x_train))
+> knn_x_train_eval <- as.matrix(predict(knn_pp, knn_x_train_eval))
+> knn_x_val <- as.matrix(predict(knn_pp, knn_x_val))
+> knn_x_test <- as.matrix(predict(knn_pp, knn_x_test))
+> 
+> knn_y_train <- train_resampled$target
+> 
+> pred_knn_train <- knn(train = knn_x_train, test = knn_x_train_eval, cl = knn_y_train, k = 10, prob = TRUE)
+> knn_prob_train_raw <- attr(pred_knn_train, "prob")
+> knn_prob_train <- ifelse(pred_knn_train == fraud_label, knn_prob_train_raw, 1 - knn_prob_train_raw)
+> 
+> pred_knn_val <- knn(train = knn_x_train, test = knn_x_val, cl = knn_y_train, k = 10, prob = TRUE)
+> knn_prob_val_raw <- attr(pred_knn_val, "prob")
+> knn_prob_val <- ifelse(pred_knn_val == fraud_label, knn_prob_val_raw, 1 - knn_prob_val_raw)
+> 
+> pred_knn_test <- knn(train = knn_x_train, test = knn_x_test, cl = knn_y_train, k = 10, prob = TRUE)
+> knn_prob_test_raw <- attr(pred_knn_test, "prob")
+> knn_prob_test <- ifelse(pred_knn_test == fraud_label, knn_prob_test_raw, 1 - knn_prob_test_raw)
+> 
+> #################################
+> # Random Forest                 #
+> #################################
+> 
+> fit_rf <- randomForest(
++   target ~ .,
++   data = train_df,
++   classwt = class_weights,
++   ntree = 200,
++   mtry = max(2, floor(sqrt(ncol(train_df) - 1))),
++   nodesize = 10,
++   maxnodes = 30
++ )
+> 
+> rf_prob_train <- predict(fit_rf, newdata = train_df, type = "prob")[, fraud_label]
+> rf_prob_val <- predict(fit_rf, newdata = val_df, type = "prob")[, fraud_label]
+> rf_prob_test <- predict(fit_rf, newdata = test_df, type = "prob")[, fraud_label]
+> 
+> roc_rf <- rbind(
++   make_roc_df(train_df$target, rf_prob_train, "train", "rf", fraud_label),
++   make_roc_df(val_df$target, rf_prob_val, "val", "rf", fraud_label),
++   make_roc_df(test_df$target, rf_prob_test, "test", "rf", fraud_label)
++ )
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+> p_roc_rf <- ggplot(roc_rf, aes(x = fpr, y = tpr, color = dataset)) +
++   geom_line(linewidth = 0.9) +
++   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
++   theme_bw() +
++   ggtitle("Random Forest - ROC (Train/Val/Test)") +
++   xlab("False Positive Rate") +
++   ylab("True Positive Rate")
+> pdf(file.path(plots_dir, "qc_rf_roc.pdf"), width = 11, height = 8.5)
+> print(p_roc_rf)
+> dev.off()
+null device 
+          1 
+> 
+> ###############
+> # Naive Bayes #
+> ###############
+> 
+> fit_nb <- NaiveBayes(target ~ ., data = train_resampled)
+> nb_prob_train <- as.numeric(predict(fit_nb, newdata = train_df)$posterior[, fraud_label])
+There were 50 or more warnings (use warnings() to see the first 50)
+> nb_prob_val <- as.numeric(predict(fit_nb, newdata = val_df)$posterior[, fraud_label])
+There were 50 or more warnings (use warnings() to see the first 50)
+> nb_prob_test <- as.numeric(predict(fit_nb, newdata = test_df)$posterior[, fraud_label])
+There were 50 or more warnings (use warnings() to see the first 50)
+> 
+> ###############
+> # XGBoost     #
+> ###############
+> 
+> x_train <- knn_x_train_eval
+> x_val <- knn_x_val
+> x_test <- knn_x_test
+> y_train_num <- ifelse(train_df$target == fraud_label, 1, 0)
+> 
+> dtrain <- xgboost::xgb.DMatrix(data = x_train, label = y_train_num)
+> dval <- xgboost::xgb.DMatrix(data = x_val)
+> dtest <- xgboost::xgb.DMatrix(data = x_test)
+> 
+> xgb_scale_pos_weight <- sum(y_train_num == 0) / sum(y_train_num == 1)
+> 
+> fit_xgb <- xgboost::xgb.train(
++   params = list(
++     objective = "binary:logistic",
++     eval_metric = "auc",
++     eta = 0.05,
++     max_depth = 3,
++     subsample = 0.7,
++     colsample_bytree = 0.7,
++     min_child_weight = 5,
++     gamma = 0.2,
++     scale_pos_weight = xgb_scale_pos_weight
++   ),
++   data = dtrain,
++   nrounds = 120,
++   verbose = 0
++ )
+> 
+> xgb_prob_train <- as.numeric(predict(fit_xgb, dtrain))
+> xgb_prob_val <- as.numeric(predict(fit_xgb, dval))
+> xgb_prob_test <- as.numeric(predict(fit_xgb, dtest))
+> 
+> roc_xgb <- rbind(
++   make_roc_df(train_df$target, xgb_prob_train, "train", "xgboost", fraud_label),
++   make_roc_df(val_df$target, xgb_prob_val, "val", "xgboost", fraud_label),
++   make_roc_df(test_df$target, xgb_prob_test, "test", "xgboost", fraud_label)
++ )
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+> p_roc_xgb <- ggplot(roc_xgb, aes(x = fpr, y = tpr, color = dataset)) +
++   geom_line(linewidth = 0.9) +
++   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
++   theme_bw() +
++   ggtitle("XGBoost - ROC (Train/Val/Test)") +
++   xlab("False Positive Rate") +
++   ylab("True Positive Rate")
+> pdf(file.path(plots_dir, "qc_xgboost_roc.pdf"), width = 11, height = 8.5)
+> print(p_roc_xgb)
+> dev.off()
+null device 
+          1 
+> 
+> #############
+> # GLMNET    #
+> #############
+> 
+> ctrl_glmnet <- trainControl(method = "cv", number = 5, classProbs = TRUE)
+> fit_glmnet <- caret::train(
++   target ~ .,
++   data = train_df,
++   method = "glmnet",
++   family = "binomial",
++   preProcess = c("center", "scale"),
++   metric = "Accuracy",
++   trControl = ctrl_glmnet
++ )
+> 
+> glmnet_prob_train <- as.numeric(predict(fit_glmnet, newdata = train_df, type = "prob")[[fraud_label]])
+> glmnet_prob_val <- as.numeric(predict(fit_glmnet, newdata = val_df, type = "prob")[[fraud_label]])
+> glmnet_prob_test <- as.numeric(predict(fit_glmnet, newdata = test_df, type = "prob")[[fraud_label]])
+> 
+> #####################
+> # Models Comparison  #
+> #####################
+> 
+> models_probs <- list(
++   rpart = list(train = tree_prob_train, val = tree_prob_val, test = tree_prob_test),
++   knn = list(train = knn_prob_train, val = knn_prob_val, test = knn_prob_test),
++   rf = list(train = rf_prob_train, val = rf_prob_val, test = rf_prob_test),
++   nb = list(train = nb_prob_train, val = nb_prob_val, test = nb_prob_test),
++   xgboost = list(train = xgb_prob_train, val = xgb_prob_val, test = xgb_prob_test),
++   glmnet = list(train = glmnet_prob_train, val = glmnet_prob_val, test = glmnet_prob_test)
++ )
+> 
+> f1_rf_tr <- make_f1_threshold_df(train_df$target, rf_prob_train, fraud_label)
+> f1_rf_tr$dataset <- "train"
+> f1_rf_va <- make_f1_threshold_df(val_df$target, rf_prob_val, fraud_label)
+> f1_rf_va$dataset <- "val"
+> f1_rf_te <- make_f1_threshold_df(test_df$target, rf_prob_test, fraud_label)
+> f1_rf_te$dataset <- "test"
+> f1_rf_all <- rbind(f1_rf_tr, f1_rf_va, f1_rf_te)
+> p_f1_rf <- ggplot(f1_rf_all, aes(x = threshold, y = f1, color = dataset)) +
++   geom_line(linewidth = 0.9) +
++   theme_bw() +
++   ggtitle("Random Forest - F1 vs Threshold") +
++   xlab("Threshold") +
++   ylab("F1-score")
+> pdf(file.path(plots_dir, "qc_rf_f1_threshold.pdf"), width = 11, height = 8.5)
+> print(p_f1_rf)
+> dev.off()
+null device 
+          1 
+> 
+> f1_glm_tr <- make_f1_threshold_df(train_df$target, glmnet_prob_train, fraud_label)
+> f1_glm_tr$dataset <- "train"
+> f1_glm_va <- make_f1_threshold_df(val_df$target, glmnet_prob_val, fraud_label)
+> f1_glm_va$dataset <- "val"
+> f1_glm_te <- make_f1_threshold_df(test_df$target, glmnet_prob_test, fraud_label)
+> f1_glm_te$dataset <- "test"
+> f1_glm_all <- rbind(f1_glm_tr, f1_glm_va, f1_glm_te)
+> p_f1_glm <- ggplot(f1_glm_all, aes(x = threshold, y = f1, color = dataset)) +
++   geom_line(linewidth = 0.9) +
++   theme_bw() +
++   ggtitle("glmnet - F1 vs Threshold") +
++   xlab("Threshold") +
++   ylab("F1-score")
+> pdf(file.path(plots_dir, "qc_glmnet_f1_threshold.pdf"), width = 11, height = 8.5)
+> print(p_f1_glm)
+Warning message:
+Removed 6 rows containing missing values or values outside the scale range
+(`geom_line()`). 
+> dev.off()
+null device 
+          1 
+> 
+> metrics_rows <- list()
+> 
+> for (model_name in names(models_probs)) {
++   p_train <- models_probs[[model_name]]$train
++   p_val <- models_probs[[model_name]]$val
++   p_test <- models_probs[[model_name]]$test
++ 
++   roc_train <- make_roc_df(train_df$target, p_train, "train", model_name, fraud_label)
++   roc_val <- make_roc_df(val_df$target, p_val, "val", model_name, fraud_label)
++   roc_test <- make_roc_df(test_df$target, p_test, "test", model_name, fraud_label)
++ 
++   f1_on_val <- sapply(threshold_grid, function(th) {
++     compute_metrics(val_df$target, p_val, threshold = th, positive = fraud_label)$f1
++   })
++   f1_on_val[is.na(f1_on_val)] <- -Inf
++   best_threshold <- threshold_grid[which.max(f1_on_val)]
++ 
++   m_train <- compute_metrics(train_df$target, p_train, threshold = best_threshold, positive = fraud_label)
++   m_val <- compute_metrics(val_df$target, p_val, threshold = best_threshold, positive = fraud_label)
++   m_test <- compute_metrics(test_df$target, p_test, threshold = best_threshold, positive = fraud_label)
++ 
++   print_confusion_matrix(train_df$target, p_train, best_threshold, model_name, "train", fraud_label)
++   print_confusion_matrix(val_df$target, p_val, best_threshold, model_name, "val", fraud_label)
++   print_confusion_matrix(test_df$target, p_test, best_threshold, model_name, "test", fraud_label)
++ 
++   metrics_rows[[length(metrics_rows) + 1]] <- data.frame(
++     Model = model_name,
++     Dataset = "train",
++     ROC_AUC = roc_train$auc[1],
++     Best_Threshold_Val = best_threshold,
++     Recall = m_train$recall,
++     Precision = m_train$precision,
++     F1 = m_train$f1,
++     F2 = m_train$f2
++   )
++   metrics_rows[[length(metrics_rows) + 1]] <- data.frame(
++     Model = model_name,
++     Dataset = "val",
++     ROC_AUC = roc_val$auc[1],
++     Best_Threshold_Val = best_threshold,
++     Recall = m_val$recall,
++     Precision = m_val$precision,
++     F1 = m_val$f1,
++     F2 = m_val$f2
++   )
++   metrics_rows[[length(metrics_rows) + 1]] <- data.frame(
++     Model = model_name,
++     Dataset = "test",
++     ROC_AUC = roc_test$auc[1],
++     Best_Threshold_Val = best_threshold,
++     Recall = m_test$recall,
++     Precision = m_test$precision,
++     F1 = m_test$f1,
++     F2 = m_test$f2
++   )
++ }
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: rpart - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT 20360     0
+  FRAUD     0  9641
+[1] "Confusion matrix: rpart - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6787     0
+  FRAUD     0  3213
+[1] "Confusion matrix: rpart - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6786     0
+  FRAUD     0  3213
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: knn - train (threshold = 0.5 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT 11220  9140
+  FRAUD  1149  8492
+[1] "Confusion matrix: knn - val (threshold = 0.5 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  3427  3360
+  FRAUD   608  2605
+[1] "Confusion matrix: knn - test (threshold = 0.5 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  3484  3302
+  FRAUD   611  2602
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: rf - train (threshold = 0.35 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT 20360     0
+  FRAUD     0  9641
+[1] "Confusion matrix: rf - val (threshold = 0.35 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6787     0
+  FRAUD     0  3213
+[1] "Confusion matrix: rf - test (threshold = 0.35 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6786     0
+  FRAUD     0  3213
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: nb - train (threshold = 0.75 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT 18941  1419
+  FRAUD  2008  7633
+[1] "Confusion matrix: nb - val (threshold = 0.75 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6292   495
+  FRAUD   694  2519
+[1] "Confusion matrix: nb - test (threshold = 0.75 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6351   435
+  FRAUD   706  2507
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: xgboost - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT 20341    19
+  FRAUD     0  9641
+[1] "Confusion matrix: xgboost - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6781     6
+  FRAUD     0  3213
+[1] "Confusion matrix: xgboost - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6780     6
+  FRAUD     0  3213
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: glmnet - train (threshold = 0.3 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT 15256  5104
+  FRAUD   978  8663
+[1] "Confusion matrix: glmnet - val (threshold = 0.3 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  5076  1711
+  FRAUD   338  2875
+[1] "Confusion matrix: glmnet - test (threshold = 0.3 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  5056  1730
+  FRAUD   327  2886
+> 
+> perf <- dplyr::bind_rows(metrics_rows)
+> perf <- perf %>%
++   dplyr::mutate(
++     ROC_AUC = round(ROC_AUC, 4),
++     Best_Threshold_Val = round(Best_Threshold_Val, 3),
++     Recall = round(Recall, 4),
++     Precision = round(Precision, 4),
++     F1 = round(F1, 4),
++     F2 = round(F2, 4)
++   )
+> 
+> write.csv(perf, file.path(output_dir, "model_performance.csv"), row.names = FALSE)
+> 
+> print("Fraud mining completed")
+[1] "Fraud mining completed"
+> #############################################################
+> # Data Mining
+> # Fraud Detection Project
+> #############################################################
+> 
+> rm(list = ls())
+> 
+> # FALSE to keep Risk_Score in dataset
+> DROP_RISK_SCORE <- TRUE
+> # FALSE to keep Failed_Transaction_Count_7d in dataset
+> DROP_FAILED_TXN_COUNT_7D <- FALSE
+> 
+> #####################
+> # Required Packages #
+> #####################
+> 
+> library(ggplot2)
+> library(dplyr)
+> library(rlang)
+> library(doBy)
+> library(rpart)
+> library(rpart.plot)
+> library(class)
+> library(caret)
+> library(randomForest)
+> library(klaR)
+> library(pROC)
+> library(corrplot)
+> library(xgboost)
+> library(glmnet)
+> library(Rtsne)
+> library(uwot)
+> 
+> ################
+> # Data Loading #
+> ################
+> 
+> script_dir <- getwd()
+> data_path <- "data/raw/synthetic_raw_cleaned.csv"
+> fraud.data <- read.csv(data_path, na.strings = c("", "NA", "NULL"))
+> 
+> output_dir <- file.path(script_dir, "output")
+> dir.create(output_dir, recursive = TRUE)
+Warning message:
+In dir.create(output_dir, recursive = TRUE) :
+  '/Users/toma/Downloads/myPYTHON/resnetCV/resnetCV/fraud_detection/output' already exists
+> plots_dir <- file.path(output_dir, "plots")
+> dir.create(plots_dir, recursive = TRUE)
+> 
+> if (isTRUE(DROP_RISK_SCORE) && "Risk_Score" %in% names(fraud.data)) {
++   fraud.data$Risk_Score <- NULL
++ }
+> 
+> if (isTRUE(DROP_FAILED_TXN_COUNT_7D) && "Failed_Transaction_Count_7d" %in% names(fraud.data)) {
++   fraud.data$Failed_Transaction_Count_7d <- NULL
++ }
+> 
+> cols <- c(
++   "Transaction_Type",
++   "Device_Type",
++   "Location",
++   "Merchant_Category",
++   "IP_Address_Flag",
++   "Previous_Fraudulent_Activity",
++   "Card_Type",
++   "Authentication_Method",
++   "Is_Weekend",
++   "Fraud_Label"
++ )
+> 
+> fraud.data <- fraud.data %>%
++   mutate(
++     target = factor(ifelse(Fraud_Label == 1, "FRAUD", "LEGIT"),
++                     levels = c("LEGIT", "FRAUD")),
++     across(where(is.character), as.factor)
++   )
+> 
+> ####################
+> # Data Exploration #
+> ####################
+> 
+> head(fraud.data)
+  Transaction_ID   User_ID Transaction_Amount Transaction_Type Timestamp
+1      TXN_33553 USER_1834              39.79              POS        19
+2       TXN_9427 USER_7875               1.19    Bank Transfer         4
+3        TXN_199 USER_2734              28.96           Online        15
+4      TXN_12447 USER_2617             254.32   ATM Withdrawal         0
+5      TXN_39489 USER_2014              31.28              POS        23
+6      TXN_42724 USER_6852             168.55           Online        20
+  Account_Balance Device_Type Location Merchant_Category IP_Address_Flag
+1        93213.17    Computer   Sydney            Travel               0
+2        75725.25      Mobile New York          Clothing               0
+3         1588.96      Tablet   Mumbai       Restaurants               0
+4        76807.20      Tablet New York          Clothing               0
+5        92354.66      Mobile   Mumbai       Electronics               0
+6        33236.94    Computer    Tokyo       Restaurants               0
+  Previous_Fraudulent_Activity Daily_Transaction_Count Avg_Transaction_Amount_7d
+1                            0                       7                    437.63
+2                            0                      13                    478.76
+3                            0                      14                     50.01
+4                            0                       8                    182.48
+5                            1                      14                    328.69
+6                            0                       3                    226.85
+  Failed_Transaction_Count_7d  Card_Type Card_Age Transaction_Distance
+1                           3       Amex       65               883.17
+2                           4 Mastercard      186              2203.36
+3                           4       Visa      226              1909.29
+4                           4       Visa       76              1311.86
+5                           4 Mastercard      140               966.98
+6                           2   Discover       51              1725.64
+  Authentication_Method Is_Weekend Fraud_Label target
+1             Biometric          0           0  LEGIT
+2              Password          0           1  FRAUD
+3             Biometric          0           1  FRAUD
+4                   OTP          0           1  FRAUD
+5              Password          1           1  FRAUD
+6                   OTP          0           0  LEGIT
+> str(fraud.data)
+'data.frame':	50000 obs. of  21 variables:
+ $ Transaction_ID              : Factor w/ 50000 levels "TXN_0","TXN_1",..: 26174 49366 11002 2723 32768 36364 918 43889 34937 29956 ...
+ $ User_ID                     : Factor w/ 8963 levels "USER_1000","USER_1001",..: 834 6850 1733 1617 1014 5831 4041 3651 584 8463 ...
+ $ Transaction_Amount          : num  39.79 1.19 28.96 254.32 31.28 ...
+ $ Transaction_Type            : Factor w/ 4 levels "ATM Withdrawal",..: 4 2 3 1 4 3 4 1 1 4 ...
+ $ Timestamp                   : int  19 4 15 0 23 20 1 3 22 17 ...
+ $ Account_Balance             : num  93213 75725 1589 76807 92355 ...
+ $ Device_Type                 : Factor w/ 3 levels "Computer","Mobile",..: 1 2 3 3 2 1 3 3 3 2 ...
+ $ Location                    : Factor w/ 5 levels "London","Mumbai",..: 4 3 2 3 2 5 1 1 5 2 ...
+ $ Merchant_Category           : Factor w/ 5 levels "Clothing","Electronics",..: 5 1 4 1 2 4 4 4 1 5 ...
+ $ IP_Address_Flag             : int  0 0 0 0 0 0 0 0 0 0 ...
+ $ Previous_Fraudulent_Activity: int  0 0 0 0 1 0 0 0 0 0 ...
+ $ Daily_Transaction_Count     : int  7 13 14 8 14 3 2 3 7 6 ...
+ $ Avg_Transaction_Amount_7d   : num  438 479 50 182 329 ...
+ $ Failed_Transaction_Count_7d : int  3 4 4 4 4 2 2 4 3 1 ...
+ $ Card_Type                   : Factor w/ 4 levels "Amex","Discover",..: 1 3 4 4 3 2 3 2 4 3 ...
+ $ Card_Age                    : int  65 186 226 76 140 51 168 182 24 124 ...
+ $ Transaction_Distance        : num  883 2203 1909 1312 967 ...
+ $ Authentication_Method       : Factor w/ 4 levels "Biometric","OTP",..: 1 3 1 2 3 2 3 1 1 4 ...
+ $ Is_Weekend                  : int  0 0 0 0 1 0 0 0 1 0 ...
+ $ Fraud_Label                 : int  0 1 1 1 1 0 0 1 0 0 ...
+ $ target                      : Factor w/ 2 levels "LEGIT","FRAUD": 1 2 2 2 2 1 1 2 1 1 ...
+> 
+> print(table(fraud.data$Fraud_Label))
+
+    0     1 
+33933 16067 
+> print(round(prop.table(table(fraud.data$Fraud_Label)) * 100, 2))
+
+    0     1 
+67.87 32.13 
+> 
+> for (col in cols) {
++   print(dplyr::count(fraud.data, !!rlang::sym(col), sort = TRUE))
++ }
+  Transaction_Type     n
+1              POS 12549
+2           Online 12546
+3   ATM Withdrawal 12453
+4    Bank Transfer 12452
+  Device_Type     n
+1      Tablet 16779
+2      Mobile 16640
+3    Computer 16581
+  Location     n
+1    Tokyo 10208
+2   Mumbai  9994
+3   London  9945
+4   Sydney  9938
+5 New York  9915
+  Merchant_Category     n
+1          Clothing 10033
+2         Groceries 10019
+3            Travel 10015
+4       Restaurants  9976
+5       Electronics  9957
+  IP_Address_Flag     n
+1               0 47490
+2               1  2510
+  Previous_Fraudulent_Activity     n
+1                            0 45080
+2                            1  4920
+   Card_Type     n
+1 Mastercard 12693
+2       Visa 12560
+3       Amex 12419
+4   Discover 12328
+  Authentication_Method     n
+1             Biometric 12591
+2                   PIN 12586
+3              Password 12457
+4                   OTP 12366
+  Is_Weekend     n
+1          0 35018
+2          1 14982
+  Fraud_Label     n
+1           0 33933
+2           1 16067
+> 
+> print(summary(fraud.data$Transaction_Amount))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+   0.00   28.68   69.66   99.41  138.85 1174.14 
+> print(summary(fraud.data$Timestamp))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+   0.00    6.00   12.00   11.52   17.00   23.00 
+> print(summary(fraud.data$Account_Balance))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  500.5 25356.0 50384.4 50294.1 75115.1 99998.3 
+> print(summary(fraud.data$Daily_Transaction_Count))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  1.000   4.000   7.000   7.485  11.000  14.000 
+> print(summary(fraud.data$Avg_Transaction_Amount_7d))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+   10.0   132.1   256.1   255.3   378.0   500.0 
+> print(summary(fraud.data$Failed_Transaction_Count_7d))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  0.000   1.000   2.000   2.004   3.000   4.000 
+> print(summary(fraud.data$Card_Age))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+      1      60     120     120     180     239 
+> print(summary(fraud.data$Transaction_Distance))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+   0.25 1256.50 2490.78 2499.16 3746.39 4999.93 
+> print(summary(fraud.data$Failed_Transaction_Count_7d))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  0.000   1.000   2.000   2.004   3.000   4.000 
+> 
+> print(sum(duplicated(fraud.data$Transaction_ID)))
+[1] 0
+> 
+> na_count <- sum(is.na(fraud.data))
+> print(paste("Total NA:", na_count))
+[1] "Total NA: 0"
+> 
+> fraud.data %>%
++   group_by(Failed_Transaction_Count_7d) %>%
++   summarise(
++     count = n(),
++     fraud_rate = mean(Fraud_Label)
++   ) %>%
++   arrange(Failed_Transaction_Count_7d) %>%
++   mutate(
++     fraud_rate = round(fraud_rate * 100, 1)
++   ) %>%
++   print()
+# A tibble: 5 × 3
+  Failed_Transaction_Count_7d count fraud_rate
+                        <int> <int>      <dbl>
+1                           0 10014       15.4
+2                           1  9919       15.4
+3                           2  9897       14.5
+4                           3 10216       15.7
+5                           4  9954      100  
+> 
+> unique(fraud.data$Failed_Transaction_Count_7d)
+[1] 3 4 2 1 0
+> 
+> ##############################
+> #   Feature Enineering       #
+> ##############################
+> 
+> if (FALSE) {
++   build_features <- function(df, night_hours = c(1, 2, 3, 4, 5)) {
++     df %>%
++       mutate(row_id = row_number()) %>%
++       group_by(User_ID) %>%
++       group_modify(~{
++         g <- .x %>% arrange(row_id)
++         n <- nrow(g)
++         
++         g$is_new_location <- sapply(seq_len(n), function(i) {
++           if (i == 1) 0 else as.integer(!(g$Location[i] %in% g$Location[1:(i - 1)]))
++         })
++         g$is_new_device <- sapply(seq_len(n), function(i) {
++           if (i == 1) 0 else as.integer(!(g$Device_Type[i] %in% g$Device_Type[1:(i - 1)]))
++         })
++         g$is_new_card <- sapply(seq_len(n), function(i) {
++           if (i == 1) 0 else as.integer(!(g$Card_Type[i] %in% g$Card_Type[1:(i - 1)]))
++         })
++         g$is_new_txn_type <- sapply(seq_len(n), function(i) {
++           if (i == 1) 0 else as.integer(!(g$Transaction_Type[i] %in% g$Transaction_Type[1:(i - 1)]))
++         })
++         g$is_location_in_top2_history <- sapply(seq_len(n), function(i) {
++           if (i == 1) {
++             0
++           } else {
++             prev_locs <- g$Location[1:(i - 1)]
++             if (length(prev_locs) == 0) {
++               0
++             } else {
++               loc_counts <- sort(table(prev_locs), decreasing = TRUE)
++               top2_locs <- names(loc_counts)[1:min(2, length(loc_counts))]
++               as.integer(g$Location[i] %in% top2_locs)
++             }
++           }
++         })
++         g$is_night_txn <- ifelse(g$Timestamp %in% night_hours, 1, 0)
++         g
++       }) %>%
++       ungroup() %>%
++       arrange(row_id) %>%
++       select(-row_id)
++   }
++ }
+> 
+> ##############################
+> #   Heatmaps                 #
+> ##############################
+> 
+> # Correlation matrix
+> eda_numeric <- fraud.data[, sapply(fraud.data, is.numeric), drop = FALSE]
+> eda_numeric <- eda_numeric[, setdiff(names(eda_numeric), "Fraud_Label"), drop = FALSE]
+> eda_numeric_sd <- sapply(eda_numeric, sd, na.rm = TRUE)
+> eda_numeric <- eda_numeric[, eda_numeric_sd > 0 & !is.na(eda_numeric_sd), drop = FALSE]
+> eda_corr <- cor(eda_numeric, use = "pairwise.complete.obs")
+> pdf(file.path(plots_dir, "numeric_corrplot.pdf"), width = 11, height = 8.5)
+> corrplot::corrplot(
++   eda_corr,
++   method = "color",
++   type = "upper",
++   tl.cex = 0.8,
++   addCoef.col = "black",
++   number.cex = 0.7
++ )
+> dev.off()
+null device 
+          1 
+> 
+> # Pearson for features and Fraud_Label
+> y_fl <- fraud.data$Fraud_Label
+> feat_names <- names(eda_numeric)
+> r_tgt <- rep(NA_real_, length(feat_names))
+> names(r_tgt) <- feat_names
+> for (nm in feat_names) {
++   r_tgt[nm] <- cor(eda_numeric[[nm]], y_fl, use = "pairwise.complete.obs")
++ }
+> corr_tgt_df <- data.frame(feature = feat_names, r = as.numeric(r_tgt), stringsAsFactors = FALSE)
+> corr_tgt_df$feature <- reorder(corr_tgt_df$feature, corr_tgt_df$r)
+> 
+> pdf(file.path(plots_dir, "numeric_corr_with_target.pdf"), width = 11, height = 8.5)
+> print(
++   ggplot(corr_tgt_df, aes(x = r, y = feature, fill = r > 0)) +
++     geom_col(width = 0.7) +
++     geom_vline(xintercept = 0, linewidth = 0.3, color = "gray40") +
++     scale_fill_manual(values = c(`FALSE` = "#e07a7a", `TRUE` = "#2ca3a3"), guide = "none") +
++     labs(x = "r", y = NULL, title = "Numeric correlation with target") +
++     theme_bw() +
++     theme(panel.grid.major.y = element_blank())
++ )
+> dev.off()
+null device 
+          1 
+> 
+> ###############################
+> # PCA                         #
+> ###############################
+> 
+> numeric_cols <- names(fraud.data)[sapply(fraud.data, is.numeric)]
+> numeric_cols <- setdiff(numeric_cols, "Fraud_Label")
+> 
+> fraud.numeric <- fraud.data[, numeric_cols]
+> 
+> set.seed(2568)
+> pairs_sample_idx <- sample(seq_len(nrow(fraud.numeric)), min(1500, nrow(fraud.numeric)))
+> pdf(file.path(plots_dir, "pairs_numeric.pdf"), width = 11, height = 8.5)
+> pairs(fraud.numeric[pairs_sample_idx, ], pch = 19, cex = 0.4)
+> dev.off()
+null device 
+          1 
+> 
+> pca_prcomp <- prcomp(fraud.numeric, scale. = TRUE)
+> print(summary(pca_prcomp))
+Importance of components:
+                           PC1     PC2     PC3     PC4     PC5     PC6     PC7
+Standard deviation     1.01172 1.00778 1.00540 1.00418 1.00338 1.00015 0.99812
+Proportion of Variance 0.09305 0.09233 0.09189 0.09167 0.09152 0.09094 0.09057
+Cumulative Proportion  0.09305 0.18538 0.27727 0.36895 0.46047 0.55141 0.64198
+                           PC8     PC9    PC10   PC11
+Standard deviation     0.99723 0.99403 0.99274 0.9850
+Proportion of Variance 0.09041 0.08983 0.08959 0.0882
+Cumulative Proportion  0.73238 0.82221 0.91180 1.0000
+> 
+> pdf(file.path(plots_dir, "pca_scree_plot.pdf"), width = 11, height = 8.5)
+> explained_var <- (pca_prcomp$sdev^2) / sum(pca_prcomp$sdev^2)
+> plot(
++   explained_var,
++   type = "b",
++   pch = 19,
++   xlab = "Principal Component",
++   ylab = "Explained Variance Ratio",
++   main = "PCA Scree Plot"
++ )
+> dev.off()
+null device 
+          1 
+> 
+> pdf(file.path(plots_dir, "pca_pc1_pc2_by_target.pdf"), width = 11, height = 8.5)
+> point_cols <- ifelse(fraud.data$target == "FRAUD", "red3", "darkgreen")
+> plot(
++   pca_prcomp$x[, 1],
++   pca_prcomp$x[, 2],
++   col = grDevices::adjustcolor(point_cols, alpha.f = 0.35),
++   pch = 16,
++   xlab = "PC1",
++   ylab = "PC2",
++   main = "PCA: PC1 vs PC2"
++ )
+> legend(
++   "topright",
++   legend = c("LEGIT", "FRAUD"),
++   col = c("darkgreen", "red3"),
++   pch = 16,
++   bty = "n"
++ )
+> dev.off()
+null device 
+          1 
+> 
+> pdf(file.path(plots_dir, "pca_pc1_pc3_by_target.pdf"), width = 11, height = 8.5)
+> point_cols <- ifelse(fraud.data$target == "FRAUD", "red3", "darkgreen")
+> plot(
++   pca_prcomp$x[, 1],
++   pca_prcomp$x[, 3],
++   col = grDevices::adjustcolor(point_cols, alpha.f = 0.35),
++   pch = 16,
++   xlab = "PC1",
++   ylab = "PC3",
++   main = "PCA: PC1 vs PC3"
++ )
+> legend(
++   "topright",
++   legend = c("LEGIT", "FRAUD"),
++   col = c("darkgreen", "red3"),
++   pch = 16,
++   bty = "n"
++ )
+> dev.off()
+null device 
+          1 
+> 
+> #########################
+> # K-means            #
+> #########################
+> 
+> fraud.zs <- as.data.frame(scale(fraud.numeric))
+> 
+> set.seed(2568)
+> cl <- kmeans(fraud.zs, centers = 2, nstart = 20)
+> cat("\nKMeans summary\n")
+
+KMeans summary
+> cat("Cluster sizes:\n")
+Cluster sizes:
+> print(cl$size)
+[1] 14982 35018
+> cat("Cluster centers:\n")
+Cluster centers:
+> print(round(cl$centers, 3))
+  Transaction_Amount Timestamp Account_Balance IP_Address_Flag
+1              0.002     0.003           0.001           0.008
+2             -0.001    -0.001           0.000          -0.003
+  Previous_Fraudulent_Activity Daily_Transaction_Count Avg_Transaction_Amount_7d
+1                       -0.001                  -0.009                     0.012
+2                        0.000                   0.004                    -0.005
+  Failed_Transaction_Count_7d Card_Age Transaction_Distance Is_Weekend
+1                      -0.005    0.005               -0.016      1.529
+2                       0.002   -0.002                0.007     -0.654
+> cat("Total withinss:", round(cl$tot.withinss, 3), "\n")
+Total withinss: 499976.9 
+> cat("Between/Total SS:", round(cl$betweenss / cl$totss, 3), "\n")
+Between/Total SS: 0.091 
+> cat("True class vs cluster:\n")
+True class vs cluster:
+> print(table(TrueClass = fraud.data$target, Cluster = cl$cluster))
+         Cluster
+TrueClass     1     2
+    LEGIT 10167 23766
+    FRAUD  4815 11252
+> 
+> pdf(file.path(plots_dir, "kmeans_clusters_scaled.pdf"), width = 11, height = 8.5)
+> km_cols <- c("#377eb8", "#e41a1c")
+> plot(
++   pca_prcomp$x[, 1],
++   pca_prcomp$x[, 2],
++   col = km_cols[cl$cluster],
++   pch = 19,
++   main = "KMeans (k=2) — PC1 vs PC2",
++   xlab = "PC1",
++   ylab = "PC2"
++ )
+Warning message:
+In title(...) :
+  for 'KMeans (k=2) — PC1 vs PC2' in 'mbcsToSbcs': - substituted for — (U+2014)
+> legend("topright", legend = c("Cluster 1", "Cluster 2"), col = km_cols, pch = 19, bty = "n")
+> dev.off()
+null device 
+          1 
+> 
+> set.seed(2568)
+> hc_idx <- sample(seq_len(nrow(fraud.zs)), min(1000, nrow(fraud.zs)))
+> hc <- hclust(dist(fraud.zs[hc_idx, ]), method = "ave")
+> pdf(file.path(plots_dir, "hclust_sample.pdf"), width = 11, height = 8.5)
+> plot(hc, main = "Hierarchical Clustering")
+> dev.off()
+null device 
+          1 
+> 
+> ####################################
+> # Class weightening and resampling #
+> ####################################
+> 
+> model_df <- fraud.data %>%
++   dplyr::select(-Transaction_ID, -User_ID, -Fraud_Label)
+> 
+> set.seed(2568)
+> train_main_idx <- caret::createDataPartition(model_df$target, p = 0.6, list = FALSE)
+> train_df <- model_df[train_main_idx, ]
+> tmp_df <- model_df[-train_main_idx, ]
+> 
+> val_idx <- caret::createDataPartition(tmp_df$target, p = 0.5, list = FALSE)
+> val_df <- tmp_df[val_idx, ]
+> test_df <- tmp_df[-val_idx, ]
+> 
+> class_weights <- c(LEGIT = 1, FRAUD = 2)
+> train_case_weights <- class_weights[as.character(train_df$target)]
+> 
+> # resampling for methods without native weights
+> set.seed(2568)
+> RESAMPLE_FRAUD_WEIGHT <- 3
+> resample_prob <- ifelse(train_df$target == "FRAUD", RESAMPLE_FRAUD_WEIGHT, 1)
+> resample_idx <- sample(
++   seq_len(nrow(train_df)),
++   size = nrow(train_df),
++   replace = TRUE,
++   prob = resample_prob
++ )
+> train_resampled <- train_df[resample_idx, ]
+> 
+> cat("\nClass proportions before resampling:\n")
+
+Class proportions before resampling:
+> print(prop.table(table(train_df$target)))
+
+   LEGIT    FRAUD 
+0.678644 0.321356 
+> 
+> cat("\nClass proportions after resampling:\n")
+
+Class proportions after resampling:
+> print(prop.table(table(train_resampled$target)))
+
+    LEGIT     FRAUD 
+0.4094864 0.5905136 
+> 
+> cat("\nClass counts before resampling:\n")
+
+Class counts before resampling:
+> print(table(train_df$target))
+
+LEGIT FRAUD 
+20360  9641 
+> 
+> cat("\nClass counts after resampling:\n")
+
+Class counts after resampling:
+> print(table(train_resampled$target))
+
+LEGIT FRAUD 
+12285 17716 
+> 
+> fraud_label <- "FRAUD"
+> threshold_grid <- seq(0.05, 0.95, by = 0.05)
+> 
+> #####################
+> # Service functions #
+> #####################
+> 
+> compute_metrics <- function(y_true, y_prob, threshold = 0.5, positive = "FRAUD") {
++   y_true <- factor(y_true, levels = c("LEGIT", "FRAUD"))
++   y_pred <- factor(ifelse(y_prob >= threshold, positive, "LEGIT"), levels = c("LEGIT", "FRAUD"))
++   tp <- sum(y_pred == positive & y_true == positive)
++   fp <- sum(y_pred == positive & y_true != positive)
++   fn <- sum(y_pred != positive & y_true == positive)
++   tn <- sum(y_pred != positive & y_true != positive)
++   recall <- tp / (tp + fn)
++   precision <- tp / (tp + fp)
++   f1 <- 2 * recall * precision / (recall + precision)
++   beta <- 2
++   f2 <- (1 + beta^2) * recall * precision / (beta^2 * precision + recall)
++   data.frame(
++     recall = recall,
++     precision = precision,
++     f1 = f1,
++     f2 = f2,
++     tp = tp,
++     fp = fp,
++     fn = fn,
++     tn = tn
++   )
++ }
+> 
+> print_confusion_matrix <- function(y_true, y_prob, threshold, model_name, dataset_name, positive = "FRAUD") {
++   y_true <- factor(y_true, levels = c("LEGIT", "FRAUD"))
++   y_pred <- factor(ifelse(y_prob >= threshold, positive, "LEGIT"), levels = c("LEGIT", "FRAUD"))
++   cm <- table(True = y_true, Pred = y_pred)
++   print(paste("Confusion matrix:", model_name, "-", dataset_name, "(threshold =", round(threshold, 3), ")"))
++   print(cm)
++ }
+> 
+> make_roc_df <- function(y_true, y_prob, dataset_name, model_name, positive = "FRAUD") {
++   y_num <- ifelse(as.character(y_true) == positive, 1, 0)
++   roc_obj <- pROC::roc(response = y_num, predictor = y_prob, direction = "<")
++   data.frame(
++     fpr = 1 - roc_obj$specificities,
++     tpr = roc_obj$sensitivities,
++     dataset = dataset_name,
++     model = model_name,
++     auc = as.numeric(pROC::auc(roc_obj))
++   )
++ }
+> 
+> make_f1_threshold_df <- function(y_true, y_prob, positive = "FRAUD") {
++   out <- data.frame(threshold = numeric(0), f1 = numeric(0))
++   for (th in threshold_grid) {
++     m <- compute_metrics(y_true, y_prob, threshold = th, positive = positive)
++     out <- rbind(out, data.frame(threshold = th, f1 = m$f1))
++   }
++   out
++ }
+> 
+> #################
+> # Decision Tree #
+> #################
+> 
+> tree_model <- rpart(
++   target ~ .,
++   data = train_df,
++   method = "class",
++   weights = train_case_weights,
++   control = rpart.control(
++     cp = 0.001,
++     minsplit = 10,
++     minbucket = 5,
++     maxdepth = 5
++   )
++ )
+> pdf(file.path(plots_dir, "rpart_tree.pdf"), width = 11, height = 8.5)
+> rpart.plot(tree_model)
+> dev.off()
+null device 
+          1 
+> 
+> pdf(file.path(plots_dir, "rpart_cp_plot.pdf"), width = 11, height = 8.5)
+> plotcp(tree_model)
+> dev.off()
+null device 
+          1 
+> 
+> tree_prob_train <- predict(tree_model, newdata = train_df, type = "prob")[, fraud_label]
+> tree_prob_val <- predict(tree_model, newdata = val_df, type = "prob")[, fraud_label]
+> tree_prob_test <- predict(tree_model, newdata = test_df, type = "prob")[, fraud_label]
+> 
+> ########
+> # KNN  #
+> ########
+> 
+> knn_predictor_cols <- setdiff(names(train_df), "target")
+> knn_formula <- as.formula(paste("~", paste(knn_predictor_cols, collapse = " + ")))
+> knn_dummies <- caret::dummyVars(knn_formula, data = train_resampled, fullRank = FALSE)
+> 
+> knn_x_train <- as.data.frame(predict(knn_dummies, newdata = train_resampled))
+> knn_x_train_eval <- as.data.frame(predict(knn_dummies, newdata = train_df))
+> knn_x_val <- as.data.frame(predict(knn_dummies, newdata = val_df))
+> knn_x_test <- as.data.frame(predict(knn_dummies, newdata = test_df))
+> 
+> knn_pp <- caret::preProcess(knn_x_train, method = c("center", "scale"))
+> knn_x_train <- as.matrix(predict(knn_pp, knn_x_train))
+> knn_x_train_eval <- as.matrix(predict(knn_pp, knn_x_train_eval))
+> knn_x_val <- as.matrix(predict(knn_pp, knn_x_val))
+> knn_x_test <- as.matrix(predict(knn_pp, knn_x_test))
+> 
+> knn_y_train <- train_resampled$target
+> 
+> pred_knn_train <- knn(train = knn_x_train, test = knn_x_train_eval, cl = knn_y_train, k = 10, prob = TRUE)
+> knn_prob_train_raw <- attr(pred_knn_train, "prob")
+> knn_prob_train <- ifelse(pred_knn_train == fraud_label, knn_prob_train_raw, 1 - knn_prob_train_raw)
+> 
+> pred_knn_val <- knn(train = knn_x_train, test = knn_x_val, cl = knn_y_train, k = 10, prob = TRUE)
+> knn_prob_val_raw <- attr(pred_knn_val, "prob")
+> knn_prob_val <- ifelse(pred_knn_val == fraud_label, knn_prob_val_raw, 1 - knn_prob_val_raw)
+> 
+> pred_knn_test <- knn(train = knn_x_train, test = knn_x_test, cl = knn_y_train, k = 10, prob = TRUE)
+> knn_prob_test_raw <- attr(pred_knn_test, "prob")
+> knn_prob_test <- ifelse(pred_knn_test == fraud_label, knn_prob_test_raw, 1 - knn_prob_test_raw)
+> 
+> #################################
+> # Random Forest                 #
+> #################################
+> 
+> fit_rf <- randomForest(
++   target ~ .,
++   data = train_df,
++   classwt = class_weights,
++   ntree = 200,
++   mtry = max(2, floor(sqrt(ncol(train_df) - 1))),
++   nodesize = 10,
++   maxnodes = 30
++ )
+> 
+> rf_prob_train <- predict(fit_rf, newdata = train_df, type = "prob")[, fraud_label]
+> rf_prob_val <- predict(fit_rf, newdata = val_df, type = "prob")[, fraud_label]
+> rf_prob_test <- predict(fit_rf, newdata = test_df, type = "prob")[, fraud_label]
+> 
+> roc_rf <- rbind(
++   make_roc_df(train_df$target, rf_prob_train, "train", "rf", fraud_label),
++   make_roc_df(val_df$target, rf_prob_val, "val", "rf", fraud_label),
++   make_roc_df(test_df$target, rf_prob_test, "test", "rf", fraud_label)
++ )
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+> p_roc_rf <- ggplot(roc_rf, aes(x = fpr, y = tpr, color = dataset)) +
++   geom_line(linewidth = 0.9) +
++   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
++   theme_bw() +
++   ggtitle("Random Forest - ROC (Train/Val/Test)") +
++   xlab("False Positive Rate") +
++   ylab("True Positive Rate")
+> pdf(file.path(plots_dir, "qc_rf_roc.pdf"), width = 11, height = 8.5)
+> print(p_roc_rf)
+> dev.off()
+null device 
+          1 
+> 
+> ###############
+> # Naive Bayes #
+> ###############
+> 
+> fit_nb <- NaiveBayes(target ~ ., data = train_resampled)
+> nb_prob_train <- as.numeric(predict(fit_nb, newdata = train_df)$posterior[, fraud_label])
+There were 50 or more warnings (use warnings() to see the first 50)
+> nb_prob_val <- as.numeric(predict(fit_nb, newdata = val_df)$posterior[, fraud_label])
+There were 50 or more warnings (use warnings() to see the first 50)
+> nb_prob_test <- as.numeric(predict(fit_nb, newdata = test_df)$posterior[, fraud_label])
+There were 50 or more warnings (use warnings() to see the first 50)
+> 
+> ###############
+> # XGBoost     #
+> ###############
+> 
+> x_train <- knn_x_train_eval
+> x_val <- knn_x_val
+> x_test <- knn_x_test
+> y_train_num <- ifelse(train_df$target == fraud_label, 1, 0)
+> 
+> dtrain <- xgboost::xgb.DMatrix(data = x_train, label = y_train_num)
+> dval <- xgboost::xgb.DMatrix(data = x_val)
+> dtest <- xgboost::xgb.DMatrix(data = x_test)
+> 
+> xgb_scale_pos_weight <- sum(y_train_num == 0) / sum(y_train_num == 1)
+> 
+> fit_xgb <- xgboost::xgb.train(
++   params = list(
++     objective = "binary:logistic",
++     eval_metric = "auc",
++     eta = 0.05,
++     max_depth = 3,
++     subsample = 0.7,
++     colsample_bytree = 0.7,
++     min_child_weight = 5,
++     gamma = 0.2,
++     scale_pos_weight = xgb_scale_pos_weight
++   ),
++   data = dtrain,
++   nrounds = 120,
++   verbose = 0
++ )
+> 
+> xgb_prob_train <- as.numeric(predict(fit_xgb, dtrain))
+> xgb_prob_val <- as.numeric(predict(fit_xgb, dval))
+> xgb_prob_test <- as.numeric(predict(fit_xgb, dtest))
+> 
+> roc_xgb <- rbind(
++   make_roc_df(train_df$target, xgb_prob_train, "train", "xgboost", fraud_label),
++   make_roc_df(val_df$target, xgb_prob_val, "val", "xgboost", fraud_label),
++   make_roc_df(test_df$target, xgb_prob_test, "test", "xgboost", fraud_label)
++ )
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+> p_roc_xgb <- ggplot(roc_xgb, aes(x = fpr, y = tpr, color = dataset)) +
++   geom_line(linewidth = 0.9) +
++   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
++   theme_bw() +
++   ggtitle("XGBoost - ROC (Train/Val/Test)") +
++   xlab("False Positive Rate") +
++   ylab("True Positive Rate")
+> pdf(file.path(plots_dir, "qc_xgboost_roc.pdf"), width = 11, height = 8.5)
+> print(p_roc_xgb)
+> dev.off()
+null device 
+          1 
+> 
+> #############
+> # GLMNET    #
+> #############
+> 
+> ctrl_glmnet <- trainControl(method = "cv", number = 5, classProbs = TRUE)
+> fit_glmnet <- caret::train(
++   target ~ .,
++   data = train_df,
++   method = "glmnet",
++   family = "binomial",
++   preProcess = c("center", "scale"),
++   metric = "Accuracy",
++   trControl = ctrl_glmnet
++ )
+> 
+> glmnet_prob_train <- as.numeric(predict(fit_glmnet, newdata = train_df, type = "prob")[[fraud_label]])
+> glmnet_prob_val <- as.numeric(predict(fit_glmnet, newdata = val_df, type = "prob")[[fraud_label]])
+> glmnet_prob_test <- as.numeric(predict(fit_glmnet, newdata = test_df, type = "prob")[[fraud_label]])
+> 
+> #####################
+> # Models Comparison  #
+> #####################
+> 
+> models_probs <- list(
++   rpart = list(train = tree_prob_train, val = tree_prob_val, test = tree_prob_test),
++   knn = list(train = knn_prob_train, val = knn_prob_val, test = knn_prob_test),
++   rf = list(train = rf_prob_train, val = rf_prob_val, test = rf_prob_test),
++   nb = list(train = nb_prob_train, val = nb_prob_val, test = nb_prob_test),
++   xgboost = list(train = xgb_prob_train, val = xgb_prob_val, test = xgb_prob_test),
++   glmnet = list(train = glmnet_prob_train, val = glmnet_prob_val, test = glmnet_prob_test)
++ )
+> 
+> f1_rf_tr <- make_f1_threshold_df(train_df$target, rf_prob_train, fraud_label)
+> f1_rf_tr$dataset <- "train"
+> f1_rf_va <- make_f1_threshold_df(val_df$target, rf_prob_val, fraud_label)
+> f1_rf_va$dataset <- "val"
+> f1_rf_te <- make_f1_threshold_df(test_df$target, rf_prob_test, fraud_label)
+> f1_rf_te$dataset <- "test"
+> f1_rf_all <- rbind(f1_rf_tr, f1_rf_va, f1_rf_te)
+> p_f1_rf <- ggplot(f1_rf_all, aes(x = threshold, y = f1, color = dataset)) +
++   geom_line(linewidth = 0.9) +
++   theme_bw() +
++   ggtitle("Random Forest - F1 vs Threshold") +
++   xlab("Threshold") +
++   ylab("F1-score")
+> pdf(file.path(plots_dir, "qc_rf_f1_threshold.pdf"), width = 11, height = 8.5)
+> print(p_f1_rf)
+> dev.off()
+null device 
+          1 
+> 
+> f1_glm_tr <- make_f1_threshold_df(train_df$target, glmnet_prob_train, fraud_label)
+> f1_glm_tr$dataset <- "train"
+> f1_glm_va <- make_f1_threshold_df(val_df$target, glmnet_prob_val, fraud_label)
+> f1_glm_va$dataset <- "val"
+> f1_glm_te <- make_f1_threshold_df(test_df$target, glmnet_prob_test, fraud_label)
+> f1_glm_te$dataset <- "test"
+> f1_glm_all <- rbind(f1_glm_tr, f1_glm_va, f1_glm_te)
+> p_f1_glm <- ggplot(f1_glm_all, aes(x = threshold, y = f1, color = dataset)) +
++   geom_line(linewidth = 0.9) +
++   theme_bw() +
++   ggtitle("glmnet - F1 vs Threshold") +
++   xlab("Threshold") +
++   ylab("F1-score")
+> pdf(file.path(plots_dir, "qc_glmnet_f1_threshold.pdf"), width = 11, height = 8.5)
+> print(p_f1_glm)
+Warning message:
+Removed 21 rows containing missing values or values outside the scale range
+(`geom_line()`). 
+> dev.off()
+null device 
+          1 
+> 
+> metrics_rows <- list()
+> 
+> for (model_name in names(models_probs)) {
++   p_train <- models_probs[[model_name]]$train
++   p_val <- models_probs[[model_name]]$val
++   p_test <- models_probs[[model_name]]$test
++ 
++   roc_train <- make_roc_df(train_df$target, p_train, "train", model_name, fraud_label)
++   roc_val <- make_roc_df(val_df$target, p_val, "val", model_name, fraud_label)
++   roc_test <- make_roc_df(test_df$target, p_test, "test", model_name, fraud_label)
++ 
++   f1_on_val <- sapply(threshold_grid, function(th) {
++     compute_metrics(val_df$target, p_val, threshold = th, positive = fraud_label)$f1
++   })
++   f1_on_val[is.na(f1_on_val)] <- -Inf
++   best_threshold <- threshold_grid[which.max(f1_on_val)]
++ 
++   m_train <- compute_metrics(train_df$target, p_train, threshold = best_threshold, positive = fraud_label)
++   m_val <- compute_metrics(val_df$target, p_val, threshold = best_threshold, positive = fraud_label)
++   m_test <- compute_metrics(test_df$target, p_test, threshold = best_threshold, positive = fraud_label)
++ 
++   print_confusion_matrix(train_df$target, p_train, best_threshold, model_name, "train", fraud_label)
++   print_confusion_matrix(val_df$target, p_val, best_threshold, model_name, "val", fraud_label)
++   print_confusion_matrix(test_df$target, p_test, best_threshold, model_name, "test", fraud_label)
++ 
++   metrics_rows[[length(metrics_rows) + 1]] <- data.frame(
++     Model = model_name,
++     Dataset = "train",
++     ROC_AUC = roc_train$auc[1],
++     Best_Threshold_Val = best_threshold,
++     Recall = m_train$recall,
++     Precision = m_train$precision,
++     F1 = m_train$f1,
++     F2 = m_train$f2
++   )
++   metrics_rows[[length(metrics_rows) + 1]] <- data.frame(
++     Model = model_name,
++     Dataset = "val",
++     ROC_AUC = roc_val$auc[1],
++     Best_Threshold_Val = best_threshold,
++     Recall = m_val$recall,
++     Precision = m_val$precision,
++     F1 = m_val$f1,
++     F2 = m_val$f2
++   )
++   metrics_rows[[length(metrics_rows) + 1]] <- data.frame(
++     Model = model_name,
++     Dataset = "test",
++     ROC_AUC = roc_test$auc[1],
++     Best_Threshold_Val = best_threshold,
++     Recall = m_test$recall,
++     Precision = m_test$precision,
++     F1 = m_test$f1,
++     F2 = m_test$f2
++   )
++ }
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: rpart - train (threshold = 0.3 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT 20360     0
+  FRAUD  3645  5996
+[1] "Confusion matrix: rpart - val (threshold = 0.3 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6787     0
+  FRAUD  1237  1976
+[1] "Confusion matrix: rpart - test (threshold = 0.3 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6786     0
+  FRAUD  1231  1982
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: knn - train (threshold = 0.45 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  8555 11805
+  FRAUD  1196  8445
+[1] "Confusion matrix: knn - val (threshold = 0.45 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  2500  4287
+  FRAUD   657  2556
+[1] "Confusion matrix: knn - test (threshold = 0.45 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  2511  4275
+  FRAUD   680  2533
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: rf - train (threshold = 0.45 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT 20360     0
+  FRAUD  3642  5999
+[1] "Confusion matrix: rf - val (threshold = 0.45 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6787     0
+  FRAUD  1237  1976
+[1] "Confusion matrix: rf - test (threshold = 0.45 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6786     0
+  FRAUD  1231  1982
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: nb - train (threshold = 0.8 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT 20360     0
+  FRAUD  3654  5987
+[1] "Confusion matrix: nb - val (threshold = 0.8 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6787     0
+  FRAUD  1237  1976
+[1] "Confusion matrix: nb - test (threshold = 0.8 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6786     0
+  FRAUD  1235  1978
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: xgboost - train (threshold = 0.4 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT 20360     0
+  FRAUD  3645  5996
+[1] "Confusion matrix: xgboost - val (threshold = 0.4 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6787     0
+  FRAUD  1237  1976
+[1] "Confusion matrix: xgboost - test (threshold = 0.4 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6786     0
+  FRAUD  1231  1982
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: glmnet - train (threshold = 0.45 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT 20360     0
+  FRAUD  3645  5996
+[1] "Confusion matrix: glmnet - val (threshold = 0.45 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6787     0
+  FRAUD  1237  1976
+[1] "Confusion matrix: glmnet - test (threshold = 0.45 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT  6786     0
+  FRAUD  1231  1982
+> 
+> perf <- dplyr::bind_rows(metrics_rows)
+> perf <- perf %>%
++   dplyr::mutate(
++     ROC_AUC = round(ROC_AUC, 4),
++     Best_Threshold_Val = round(Best_Threshold_Val, 3),
++     Recall = round(Recall, 4),
++     Precision = round(Precision, 4),
++     F1 = round(F1, 4),
++     F2 = round(F2, 4)
++   )
+> 
+> write.csv(perf, file.path(output_dir, "model_performance.csv"), row.names = FALSE)
+> 
+> print("Fraud mining completed")
+[1] "Fraud mining completed"
+> #############################################################
+> # Data Mining
+> # Fraud Detection Project
+> #############################################################
+> 
+> rm(list = ls())
+> 
+> # FALSE to keep Risk_Score in dataset
+> DROP_RISK_SCORE <- TRUE
+> # FALSE to keep Failed_Transaction_Count_7d in dataset
+> DROP_FAILED_TXN_COUNT_7D <- TRUE
+> 
+> #####################
+> # Required Packages #
+> #####################
+> 
+> library(ggplot2)
+> library(dplyr)
+> library(rlang)
+> library(doBy)
+> library(rpart)
+> library(rpart.plot)
+> library(class)
+> library(caret)
+> library(randomForest)
+> library(klaR)
+> library(pROC)
+> library(corrplot)
+> library(xgboost)
+> library(glmnet)
+> library(Rtsne)
+> library(uwot)
+> 
+> ################
+> # Data Loading #
+> ################
+> 
+> script_dir <- getwd()
+> data_path <- "data/raw/synthetic_raw_cleaned.csv"
+> fraud.data <- read.csv(data_path, na.strings = c("", "NA", "NULL"))
+> 
+> output_dir <- file.path(script_dir, "output")
+> dir.create(output_dir, recursive = TRUE)
+Warning message:
+In dir.create(output_dir, recursive = TRUE) :
+  '/Users/toma/Downloads/myPYTHON/resnetCV/resnetCV/fraud_detection/output' already exists
+> plots_dir <- file.path(output_dir, "plots")
+> dir.create(plots_dir, recursive = TRUE)
+> 
+> if (isTRUE(DROP_RISK_SCORE) && "Risk_Score" %in% names(fraud.data)) {
++   fraud.data$Risk_Score <- NULL
++ }
+> 
+> if (isTRUE(DROP_FAILED_TXN_COUNT_7D) && "Failed_Transaction_Count_7d" %in% names(fraud.data)) {
++   fraud.data$Failed_Transaction_Count_7d <- NULL
++ }
+> 
+> cols <- c(
++   "Transaction_Type",
++   "Device_Type",
++   "Location",
++   "Merchant_Category",
++   "IP_Address_Flag",
++   "Previous_Fraudulent_Activity",
++   "Card_Type",
++   "Authentication_Method",
++   "Is_Weekend",
++   "Fraud_Label"
++ )
+> 
+> fraud.data <- fraud.data %>%
++   mutate(
++     target = factor(ifelse(Fraud_Label == 1, "FRAUD", "LEGIT"),
++                     levels = c("LEGIT", "FRAUD")),
++     across(where(is.character), as.factor)
++   )
+> 
+> ####################
+> # Data Exploration #
+> ####################
+> 
+> head(fraud.data)
+  Transaction_ID   User_ID Transaction_Amount Transaction_Type Timestamp
+1      TXN_33553 USER_1834              39.79              POS        19
+2       TXN_9427 USER_7875               1.19    Bank Transfer         4
+3        TXN_199 USER_2734              28.96           Online        15
+4      TXN_12447 USER_2617             254.32   ATM Withdrawal         0
+5      TXN_39489 USER_2014              31.28              POS        23
+6      TXN_42724 USER_6852             168.55           Online        20
+  Account_Balance Device_Type Location Merchant_Category IP_Address_Flag
+1        93213.17    Computer   Sydney            Travel               0
+2        75725.25      Mobile New York          Clothing               0
+3         1588.96      Tablet   Mumbai       Restaurants               0
+4        76807.20      Tablet New York          Clothing               0
+5        92354.66      Mobile   Mumbai       Electronics               0
+6        33236.94    Computer    Tokyo       Restaurants               0
+  Previous_Fraudulent_Activity Daily_Transaction_Count Avg_Transaction_Amount_7d
+1                            0                       7                    437.63
+2                            0                      13                    478.76
+3                            0                      14                     50.01
+4                            0                       8                    182.48
+5                            1                      14                    328.69
+6                            0                       3                    226.85
+   Card_Type Card_Age Transaction_Distance Authentication_Method Is_Weekend
+1       Amex       65               883.17             Biometric          0
+2 Mastercard      186              2203.36              Password          0
+3       Visa      226              1909.29             Biometric          0
+4       Visa       76              1311.86                   OTP          0
+5 Mastercard      140               966.98              Password          1
+6   Discover       51              1725.64                   OTP          0
+  Fraud_Label target
+1           0  LEGIT
+2           1  FRAUD
+3           1  FRAUD
+4           1  FRAUD
+5           1  FRAUD
+6           0  LEGIT
+> str(fraud.data)
+'data.frame':	50000 obs. of  20 variables:
+ $ Transaction_ID              : Factor w/ 50000 levels "TXN_0","TXN_1",..: 26174 49366 11002 2723 32768 36364 918 43889 34937 29956 ...
+ $ User_ID                     : Factor w/ 8963 levels "USER_1000","USER_1001",..: 834 6850 1733 1617 1014 5831 4041 3651 584 8463 ...
+ $ Transaction_Amount          : num  39.79 1.19 28.96 254.32 31.28 ...
+ $ Transaction_Type            : Factor w/ 4 levels "ATM Withdrawal",..: 4 2 3 1 4 3 4 1 1 4 ...
+ $ Timestamp                   : int  19 4 15 0 23 20 1 3 22 17 ...
+ $ Account_Balance             : num  93213 75725 1589 76807 92355 ...
+ $ Device_Type                 : Factor w/ 3 levels "Computer","Mobile",..: 1 2 3 3 2 1 3 3 3 2 ...
+ $ Location                    : Factor w/ 5 levels "London","Mumbai",..: 4 3 2 3 2 5 1 1 5 2 ...
+ $ Merchant_Category           : Factor w/ 5 levels "Clothing","Electronics",..: 5 1 4 1 2 4 4 4 1 5 ...
+ $ IP_Address_Flag             : int  0 0 0 0 0 0 0 0 0 0 ...
+ $ Previous_Fraudulent_Activity: int  0 0 0 0 1 0 0 0 0 0 ...
+ $ Daily_Transaction_Count     : int  7 13 14 8 14 3 2 3 7 6 ...
+ $ Avg_Transaction_Amount_7d   : num  438 479 50 182 329 ...
+ $ Card_Type                   : Factor w/ 4 levels "Amex","Discover",..: 1 3 4 4 3 2 3 2 4 3 ...
+ $ Card_Age                    : int  65 186 226 76 140 51 168 182 24 124 ...
+ $ Transaction_Distance        : num  883 2203 1909 1312 967 ...
+ $ Authentication_Method       : Factor w/ 4 levels "Biometric","OTP",..: 1 3 1 2 3 2 3 1 1 4 ...
+ $ Is_Weekend                  : int  0 0 0 0 1 0 0 0 1 0 ...
+ $ Fraud_Label                 : int  0 1 1 1 1 0 0 1 0 0 ...
+ $ target                      : Factor w/ 2 levels "LEGIT","FRAUD": 1 2 2 2 2 1 1 2 1 1 ...
+> 
+> print(table(fraud.data$Fraud_Label))
+
+    0     1 
+33933 16067 
+> print(round(prop.table(table(fraud.data$Fraud_Label)) * 100, 2))
+
+    0     1 
+67.87 32.13 
+> 
+> for (col in cols) {
++   print(dplyr::count(fraud.data, !!rlang::sym(col), sort = TRUE))
++ }
+  Transaction_Type     n
+1              POS 12549
+2           Online 12546
+3   ATM Withdrawal 12453
+4    Bank Transfer 12452
+  Device_Type     n
+1      Tablet 16779
+2      Mobile 16640
+3    Computer 16581
+  Location     n
+1    Tokyo 10208
+2   Mumbai  9994
+3   London  9945
+4   Sydney  9938
+5 New York  9915
+  Merchant_Category     n
+1          Clothing 10033
+2         Groceries 10019
+3            Travel 10015
+4       Restaurants  9976
+5       Electronics  9957
+  IP_Address_Flag     n
+1               0 47490
+2               1  2510
+  Previous_Fraudulent_Activity     n
+1                            0 45080
+2                            1  4920
+   Card_Type     n
+1 Mastercard 12693
+2       Visa 12560
+3       Amex 12419
+4   Discover 12328
+  Authentication_Method     n
+1             Biometric 12591
+2                   PIN 12586
+3              Password 12457
+4                   OTP 12366
+  Is_Weekend     n
+1          0 35018
+2          1 14982
+  Fraud_Label     n
+1           0 33933
+2           1 16067
+> 
+> print(summary(fraud.data$Transaction_Amount))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+   0.00   28.68   69.66   99.41  138.85 1174.14 
+> print(summary(fraud.data$Timestamp))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+   0.00    6.00   12.00   11.52   17.00   23.00 
+> print(summary(fraud.data$Account_Balance))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  500.5 25356.0 50384.4 50294.1 75115.1 99998.3 
+> print(summary(fraud.data$Daily_Transaction_Count))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  1.000   4.000   7.000   7.485  11.000  14.000 
+> print(summary(fraud.data$Avg_Transaction_Amount_7d))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+   10.0   132.1   256.1   255.3   378.0   500.0 
+> print(summary(fraud.data$Failed_Transaction_Count_7d))
+Length  Class   Mode 
+     0   NULL   NULL 
+> print(summary(fraud.data$Card_Age))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+      1      60     120     120     180     239 
+> print(summary(fraud.data$Transaction_Distance))
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+   0.25 1256.50 2490.78 2499.16 3746.39 4999.93 
+> print(summary(fraud.data$Failed_Transaction_Count_7d))
+Length  Class   Mode 
+     0   NULL   NULL 
+> 
+> print(sum(duplicated(fraud.data$Transaction_ID)))
+[1] 0
+> 
+> na_count <- sum(is.na(fraud.data))
+> print(paste("Total NA:", na_count))
+[1] "Total NA: 0"
+> 
+> fraud.data %>%
++   group_by(Failed_Transaction_Count_7d) %>%
++   summarise(
++     count = n(),
++     fraud_rate = mean(Fraud_Label)
++   ) %>%
++   arrange(Failed_Transaction_Count_7d) %>%
++   mutate(
++     fraud_rate = round(fraud_rate * 100, 1)
++   ) %>%
++   print()
+Error in (function (cond)  : 
+  error in evaluating the argument 'x' in selecting a method for function 'print': Must group by variables found in `.data`.
+✖ Column `Failed_Transaction_Count_7d` is not found.
+
+> ##############################
+> #   Feature Enineering       #
+> ##############################
+> 
+> if (FALSE) {
++   build_features <- function(df, night_hours = c(1, 2, 3, 4, 5)) {
++     df %>%
++       mutate(row_id = row_number()) %>%
++       group_by(User_ID) %>%
++       group_modify(~{
++         g <- .x %>% arrange(row_id)
++         n <- nrow(g)
++         
++         g$is_new_location <- sapply(seq_len(n), function(i) {
++           if (i == 1) 0 else as.integer(!(g$Location[i] %in% g$Location[1:(i - 1)]))
++         })
++         g$is_new_device <- sapply(seq_len(n), function(i) {
++           if (i == 1) 0 else as.integer(!(g$Device_Type[i] %in% g$Device_Type[1:(i - 1)]))
++         })
++         g$is_new_card <- sapply(seq_len(n), function(i) {
++           if (i == 1) 0 else as.integer(!(g$Card_Type[i] %in% g$Card_Type[1:(i - 1)]))
++         })
++         g$is_new_txn_type <- sapply(seq_len(n), function(i) {
++           if (i == 1) 0 else as.integer(!(g$Transaction_Type[i] %in% g$Transaction_Type[1:(i - 1)]))
++         })
++         g$is_location_in_top2_history <- sapply(seq_len(n), function(i) {
++           if (i == 1) {
++             0
++           } else {
++             prev_locs <- g$Location[1:(i - 1)]
++             if (length(prev_locs) == 0) {
++               0
++             } else {
++               loc_counts <- sort(table(prev_locs), decreasing = TRUE)
++               top2_locs <- names(loc_counts)[1:min(2, length(loc_counts))]
++               as.integer(g$Location[i] %in% top2_locs)
++             }
++           }
++         })
++         g$is_night_txn <- ifelse(g$Timestamp %in% night_hours, 1, 0)
++         g
++       }) %>%
++       ungroup() %>%
++       arrange(row_id) %>%
++       select(-row_id)
++   }
++ }
+> 
+> ##############################
+> #   Heatmaps                 #
+> ##############################
+> 
+> # Correlation matrix
+> eda_numeric <- fraud.data[, sapply(fraud.data, is.numeric), drop = FALSE]
+> eda_numeric <- eda_numeric[, setdiff(names(eda_numeric), "Fraud_Label"), drop = FALSE]
+> eda_numeric_sd <- sapply(eda_numeric, sd, na.rm = TRUE)
+> eda_numeric <- eda_numeric[, eda_numeric_sd > 0 & !is.na(eda_numeric_sd), drop = FALSE]
+> eda_corr <- cor(eda_numeric, use = "pairwise.complete.obs")
+> pdf(file.path(plots_dir, "numeric_corrplot.pdf"), width = 11, height = 8.5)
+> corrplot::corrplot(
++   eda_corr,
++   method = "color",
++   type = "upper",
++   tl.cex = 0.8,
++   addCoef.col = "black",
++   number.cex = 0.7
++ )
+> dev.off()
+null device 
+          1 
+> 
+> # Pearson for features and Fraud_Label
+> y_fl <- fraud.data$Fraud_Label
+> feat_names <- names(eda_numeric)
+> r_tgt <- rep(NA_real_, length(feat_names))
+> names(r_tgt) <- feat_names
+> for (nm in feat_names) {
++   r_tgt[nm] <- cor(eda_numeric[[nm]], y_fl, use = "pairwise.complete.obs")
++ }
+> corr_tgt_df <- data.frame(feature = feat_names, r = as.numeric(r_tgt), stringsAsFactors = FALSE)
+> corr_tgt_df$feature <- reorder(corr_tgt_df$feature, corr_tgt_df$r)
+> 
+> pdf(file.path(plots_dir, "numeric_corr_with_target.pdf"), width = 11, height = 8.5)
+> print(
++   ggplot(corr_tgt_df, aes(x = r, y = feature, fill = r > 0)) +
++     geom_col(width = 0.7) +
++     geom_vline(xintercept = 0, linewidth = 0.3, color = "gray40") +
++     scale_fill_manual(values = c(`FALSE` = "#e07a7a", `TRUE` = "#2ca3a3"), guide = "none") +
++     labs(x = "r", y = NULL, title = "Numeric correlation with target") +
++     theme_bw() +
++     theme(panel.grid.major.y = element_blank())
++ )
+> dev.off()
+null device 
+          1 
+> 
+> ###############################
+> # PCA                         #
+> ###############################
+> 
+> numeric_cols <- names(fraud.data)[sapply(fraud.data, is.numeric)]
+> numeric_cols <- setdiff(numeric_cols, "Fraud_Label")
+> 
+> fraud.numeric <- fraud.data[, numeric_cols]
+> 
+> set.seed(2568)
+> pairs_sample_idx <- sample(seq_len(nrow(fraud.numeric)), min(1500, nrow(fraud.numeric)))
+> pdf(file.path(plots_dir, "pairs_numeric.pdf"), width = 11, height = 8.5)
+> pairs(fraud.numeric[pairs_sample_idx, ], pch = 19, cex = 0.4)
+> dev.off()
+null device 
+          1 
+> 
+> pca_prcomp <- prcomp(fraud.numeric, scale. = TRUE)
+> print(summary(pca_prcomp))
+Importance of components:
+                         PC1    PC2    PC3    PC4    PC5    PC6     PC7     PC8
+Standard deviation     1.010 1.0075 1.0042 1.0040 1.0010 1.0001 0.99803 0.99407
+Proportion of Variance 0.102 0.1015 0.1008 0.1008 0.1002 0.1000 0.09961 0.09882
+Cumulative Proportion  0.102 0.2035 0.3044 0.4052 0.5054 0.6054 0.70501 0.80382
+                           PC9    PC10
+Standard deviation     0.99306 0.98772
+Proportion of Variance 0.09862 0.09756
+Cumulative Proportion  0.90244 1.00000
+> 
+> pdf(file.path(plots_dir, "pca_scree_plot.pdf"), width = 11, height = 8.5)
+> explained_var <- (pca_prcomp$sdev^2) / sum(pca_prcomp$sdev^2)
+> plot(
++   explained_var,
++   type = "b",
++   pch = 19,
++   xlab = "Principal Component",
++   ylab = "Explained Variance Ratio",
++   main = "PCA Scree Plot"
++ )
+> dev.off()
+null device 
+          1 
+> 
+> pdf(file.path(plots_dir, "pca_pc1_pc2_by_target.pdf"), width = 11, height = 8.5)
+> point_cols <- ifelse(fraud.data$target == "FRAUD", "red3", "darkgreen")
+> plot(
++   pca_prcomp$x[, 1],
++   pca_prcomp$x[, 2],
++   col = grDevices::adjustcolor(point_cols, alpha.f = 0.35),
++   pch = 16,
++   xlab = "PC1",
++   ylab = "PC2",
++   main = "PCA: PC1 vs PC2"
++ )
+> legend(
++   "topright",
++   legend = c("LEGIT", "FRAUD"),
++   col = c("darkgreen", "red3"),
++   pch = 16,
++   bty = "n"
++ )
+> dev.off()
+null device 
+          1 
+> 
+> pdf(file.path(plots_dir, "pca_pc1_pc3_by_target.pdf"), width = 11, height = 8.5)
+> point_cols <- ifelse(fraud.data$target == "FRAUD", "red3", "darkgreen")
+> plot(
++   pca_prcomp$x[, 1],
++   pca_prcomp$x[, 3],
++   col = grDevices::adjustcolor(point_cols, alpha.f = 0.35),
++   pch = 16,
++   xlab = "PC1",
++   ylab = "PC3",
++   main = "PCA: PC1 vs PC3"
++ )
+> legend(
++   "topright",
++   legend = c("LEGIT", "FRAUD"),
++   col = c("darkgreen", "red3"),
++   pch = 16,
++   bty = "n"
++ )
+> dev.off()
+null device 
+          1 
+> 
+> #########################
+> # K-means            #
+> #########################
+> 
+> fraud.zs <- as.data.frame(scale(fraud.numeric))
+> 
+> set.seed(2568)
+> cl <- kmeans(fraud.zs, centers = 2, nstart = 20)
+> cat("\nKMeans summary\n")
+
+KMeans summary
+> cat("Cluster sizes:\n")
+Cluster sizes:
+> print(cl$size)
+[1] 14982 35018
+> cat("Cluster centers:\n")
+Cluster centers:
+> print(round(cl$centers, 3))
+  Transaction_Amount Timestamp Account_Balance IP_Address_Flag
+1              0.002     0.003           0.001           0.008
+2             -0.001    -0.001           0.000          -0.003
+  Previous_Fraudulent_Activity Daily_Transaction_Count Avg_Transaction_Amount_7d
+1                       -0.001                  -0.009                     0.012
+2                        0.000                   0.004                    -0.005
+  Card_Age Transaction_Distance Is_Weekend
+1    0.005               -0.016      1.529
+2   -0.002                0.007     -0.654
+> cat("Total withinss:", round(cl$tot.withinss, 3), "\n")
+Total withinss: 449978.4 
+> cat("Between/Total SS:", round(cl$betweenss / cl$totss, 3), "\n")
+Between/Total SS: 0.1 
+> cat("True class vs cluster:\n")
+True class vs cluster:
+> print(table(TrueClass = fraud.data$target, Cluster = cl$cluster))
+         Cluster
+TrueClass     1     2
+    LEGIT 10167 23766
+    FRAUD  4815 11252
+> 
+> pdf(file.path(plots_dir, "kmeans_clusters_scaled.pdf"), width = 11, height = 8.5)
+> km_cols <- c("#377eb8", "#e41a1c")
+> plot(
++   pca_prcomp$x[, 1],
++   pca_prcomp$x[, 2],
++   col = km_cols[cl$cluster],
++   pch = 19,
++   main = "KMeans (k=2) — PC1 vs PC2",
++   xlab = "PC1",
++   ylab = "PC2"
++ )
+Warning message:
+In title(...) :
+  for 'KMeans (k=2) — PC1 vs PC2' in 'mbcsToSbcs': - substituted for — (U+2014)
+> legend("topright", legend = c("Cluster 1", "Cluster 2"), col = km_cols, pch = 19, bty = "n")
+> dev.off()
+null device 
+          1 
+> 
+> set.seed(2568)
+> hc_idx <- sample(seq_len(nrow(fraud.zs)), min(1000, nrow(fraud.zs)))
+> hc <- hclust(dist(fraud.zs[hc_idx, ]), method = "ave")
+> pdf(file.path(plots_dir, "hclust_sample.pdf"), width = 11, height = 8.5)
+> plot(hc, main = "Hierarchical Clustering")
+> dev.off()
+null device 
+          1 
+> 
+> ####################################
+> # Class weightening and resampling #
+> ####################################
+> 
+> model_df <- fraud.data %>%
++   dplyr::select(-Transaction_ID, -User_ID, -Fraud_Label)
+> 
+> set.seed(2568)
+> train_main_idx <- caret::createDataPartition(model_df$target, p = 0.6, list = FALSE)
+> train_df <- model_df[train_main_idx, ]
+> tmp_df <- model_df[-train_main_idx, ]
+> 
+> val_idx <- caret::createDataPartition(tmp_df$target, p = 0.5, list = FALSE)
+> val_df <- tmp_df[val_idx, ]
+> test_df <- tmp_df[-val_idx, ]
+> 
+> class_weights <- c(LEGIT = 1, FRAUD = 2)
+> train_case_weights <- class_weights[as.character(train_df$target)]
+> 
+> # resampling for methods without native weights
+> set.seed(2568)
+> RESAMPLE_FRAUD_WEIGHT <- 3
+> resample_prob <- ifelse(train_df$target == "FRAUD", RESAMPLE_FRAUD_WEIGHT, 1)
+> resample_idx <- sample(
++   seq_len(nrow(train_df)),
++   size = nrow(train_df),
++   replace = TRUE,
++   prob = resample_prob
++ )
+> train_resampled <- train_df[resample_idx, ]
+> 
+> cat("\nClass proportions before resampling:\n")
+
+Class proportions before resampling:
+> print(prop.table(table(train_df$target)))
+
+   LEGIT    FRAUD 
+0.678644 0.321356 
+> 
+> cat("\nClass proportions after resampling:\n")
+
+Class proportions after resampling:
+> print(prop.table(table(train_resampled$target)))
+
+    LEGIT     FRAUD 
+0.4094864 0.5905136 
+> 
+> cat("\nClass counts before resampling:\n")
+
+Class counts before resampling:
+> print(table(train_df$target))
+
+LEGIT FRAUD 
+20360  9641 
+> 
+> cat("\nClass counts after resampling:\n")
+
+Class counts after resampling:
+> print(table(train_resampled$target))
+
+LEGIT FRAUD 
+12285 17716 
+> 
+> fraud_label <- "FRAUD"
+> threshold_grid <- seq(0.05, 0.95, by = 0.05)
+> 
+> #####################
+> # Service functions #
+> #####################
+> 
+> compute_metrics <- function(y_true, y_prob, threshold = 0.5, positive = "FRAUD") {
++   y_true <- factor(y_true, levels = c("LEGIT", "FRAUD"))
++   y_pred <- factor(ifelse(y_prob >= threshold, positive, "LEGIT"), levels = c("LEGIT", "FRAUD"))
++   tp <- sum(y_pred == positive & y_true == positive)
++   fp <- sum(y_pred == positive & y_true != positive)
++   fn <- sum(y_pred != positive & y_true == positive)
++   tn <- sum(y_pred != positive & y_true != positive)
++   recall <- tp / (tp + fn)
++   precision <- tp / (tp + fp)
++   f1 <- 2 * recall * precision / (recall + precision)
++   beta <- 2
++   f2 <- (1 + beta^2) * recall * precision / (beta^2 * precision + recall)
++   data.frame(
++     recall = recall,
++     precision = precision,
++     f1 = f1,
++     f2 = f2,
++     tp = tp,
++     fp = fp,
++     fn = fn,
++     tn = tn
++   )
++ }
+> 
+> print_confusion_matrix <- function(y_true, y_prob, threshold, model_name, dataset_name, positive = "FRAUD") {
++   y_true <- factor(y_true, levels = c("LEGIT", "FRAUD"))
++   y_pred <- factor(ifelse(y_prob >= threshold, positive, "LEGIT"), levels = c("LEGIT", "FRAUD"))
++   cm <- table(True = y_true, Pred = y_pred)
++   print(paste("Confusion matrix:", model_name, "-", dataset_name, "(threshold =", round(threshold, 3), ")"))
++   print(cm)
++ }
+> 
+> make_roc_df <- function(y_true, y_prob, dataset_name, model_name, positive = "FRAUD") {
++   y_num <- ifelse(as.character(y_true) == positive, 1, 0)
++   roc_obj <- pROC::roc(response = y_num, predictor = y_prob, direction = "<")
++   data.frame(
++     fpr = 1 - roc_obj$specificities,
++     tpr = roc_obj$sensitivities,
++     dataset = dataset_name,
++     model = model_name,
++     auc = as.numeric(pROC::auc(roc_obj))
++   )
++ }
+> 
+> make_f1_threshold_df <- function(y_true, y_prob, positive = "FRAUD") {
++   out <- data.frame(threshold = numeric(0), f1 = numeric(0))
++   for (th in threshold_grid) {
++     m <- compute_metrics(y_true, y_prob, threshold = th, positive = positive)
++     out <- rbind(out, data.frame(threshold = th, f1 = m$f1))
++   }
++   out
++ }
+> 
+> #################
+> # Decision Tree #
+> #################
+> 
+> tree_model <- rpart(
++   target ~ .,
++   data = train_df,
++   method = "class",
++   weights = train_case_weights,
++   control = rpart.control(
++     cp = 0.001,
++     minsplit = 10,
++     minbucket = 5,
++     maxdepth = 5
++   )
++ )
+> pdf(file.path(plots_dir, "rpart_tree.pdf"), width = 11, height = 8.5)
+> rpart.plot(tree_model)
+> dev.off()
+null device 
+          1 
+> 
+> pdf(file.path(plots_dir, "rpart_cp_plot.pdf"), width = 11, height = 8.5)
+> plotcp(tree_model)
+> dev.off()
+null device 
+          1 
+> 
+> tree_prob_train <- predict(tree_model, newdata = train_df, type = "prob")[, fraud_label]
+> tree_prob_val <- predict(tree_model, newdata = val_df, type = "prob")[, fraud_label]
+> tree_prob_test <- predict(tree_model, newdata = test_df, type = "prob")[, fraud_label]
+> 
+> ########
+> # KNN  #
+> ########
+> 
+> knn_predictor_cols <- setdiff(names(train_df), "target")
+> knn_formula <- as.formula(paste("~", paste(knn_predictor_cols, collapse = " + ")))
+> knn_dummies <- caret::dummyVars(knn_formula, data = train_resampled, fullRank = FALSE)
+> 
+> knn_x_train <- as.data.frame(predict(knn_dummies, newdata = train_resampled))
+> knn_x_train_eval <- as.data.frame(predict(knn_dummies, newdata = train_df))
+> knn_x_val <- as.data.frame(predict(knn_dummies, newdata = val_df))
+> knn_x_test <- as.data.frame(predict(knn_dummies, newdata = test_df))
+> 
+> knn_pp <- caret::preProcess(knn_x_train, method = c("center", "scale"))
+> knn_x_train <- as.matrix(predict(knn_pp, knn_x_train))
+> knn_x_train_eval <- as.matrix(predict(knn_pp, knn_x_train_eval))
+> knn_x_val <- as.matrix(predict(knn_pp, knn_x_val))
+> knn_x_test <- as.matrix(predict(knn_pp, knn_x_test))
+> 
+> knn_y_train <- train_resampled$target
+> 
+> pred_knn_train <- knn(train = knn_x_train, test = knn_x_train_eval, cl = knn_y_train, k = 10, prob = TRUE)
+> knn_prob_train_raw <- attr(pred_knn_train, "prob")
+> knn_prob_train <- ifelse(pred_knn_train == fraud_label, knn_prob_train_raw, 1 - knn_prob_train_raw)
+> 
+> pred_knn_val <- knn(train = knn_x_train, test = knn_x_val, cl = knn_y_train, k = 10, prob = TRUE)
+> knn_prob_val_raw <- attr(pred_knn_val, "prob")
+> knn_prob_val <- ifelse(pred_knn_val == fraud_label, knn_prob_val_raw, 1 - knn_prob_val_raw)
+> 
+> pred_knn_test <- knn(train = knn_x_train, test = knn_x_test, cl = knn_y_train, k = 10, prob = TRUE)
+> knn_prob_test_raw <- attr(pred_knn_test, "prob")
+> knn_prob_test <- ifelse(pred_knn_test == fraud_label, knn_prob_test_raw, 1 - knn_prob_test_raw)
+> 
+> #################################
+> # Random Forest                 #
+> #################################
+> 
+> fit_rf <- randomForest(
++   target ~ .,
++   data = train_df,
++   classwt = class_weights,
++   ntree = 200,
++   mtry = max(2, floor(sqrt(ncol(train_df) - 1))),
++   nodesize = 10,
++   maxnodes = 30
++ )
+> 
+> rf_prob_train <- predict(fit_rf, newdata = train_df, type = "prob")[, fraud_label]
+> rf_prob_val <- predict(fit_rf, newdata = val_df, type = "prob")[, fraud_label]
+> rf_prob_test <- predict(fit_rf, newdata = test_df, type = "prob")[, fraud_label]
+> 
+> roc_rf <- rbind(
++   make_roc_df(train_df$target, rf_prob_train, "train", "rf", fraud_label),
++   make_roc_df(val_df$target, rf_prob_val, "val", "rf", fraud_label),
++   make_roc_df(test_df$target, rf_prob_test, "test", "rf", fraud_label)
++ )
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+> p_roc_rf <- ggplot(roc_rf, aes(x = fpr, y = tpr, color = dataset)) +
++   geom_line(linewidth = 0.9) +
++   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
++   theme_bw() +
++   ggtitle("Random Forest - ROC (Train/Val/Test)") +
++   xlab("False Positive Rate") +
++   ylab("True Positive Rate")
+> pdf(file.path(plots_dir, "qc_rf_roc.pdf"), width = 11, height = 8.5)
+> print(p_roc_rf)
+> dev.off()
+null device 
+          1 
+> 
+> ###############
+> # Naive Bayes #
+> ###############
+> 
+> fit_nb <- NaiveBayes(target ~ ., data = train_resampled)
+> nb_prob_train <- as.numeric(predict(fit_nb, newdata = train_df)$posterior[, fraud_label])
+There were 50 or more warnings (use warnings() to see the first 50)
+> nb_prob_val <- as.numeric(predict(fit_nb, newdata = val_df)$posterior[, fraud_label])
+There were 50 or more warnings (use warnings() to see the first 50)
+> nb_prob_test <- as.numeric(predict(fit_nb, newdata = test_df)$posterior[, fraud_label])
+There were 50 or more warnings (use warnings() to see the first 50)
+> 
+> ###############
+> # XGBoost     #
+> ###############
+> 
+> x_train <- knn_x_train_eval
+> x_val <- knn_x_val
+> x_test <- knn_x_test
+> y_train_num <- ifelse(train_df$target == fraud_label, 1, 0)
+> 
+> dtrain <- xgboost::xgb.DMatrix(data = x_train, label = y_train_num)
+> dval <- xgboost::xgb.DMatrix(data = x_val)
+> dtest <- xgboost::xgb.DMatrix(data = x_test)
+> 
+> xgb_scale_pos_weight <- sum(y_train_num == 0) / sum(y_train_num == 1)
+> 
+> fit_xgb <- xgboost::xgb.train(
++   params = list(
++     objective = "binary:logistic",
++     eval_metric = "auc",
++     eta = 0.05,
++     max_depth = 3,
++     subsample = 0.7,
++     colsample_bytree = 0.7,
++     min_child_weight = 5,
++     gamma = 0.2,
++     scale_pos_weight = xgb_scale_pos_weight
++   ),
++   data = dtrain,
++   nrounds = 120,
++   verbose = 0
++ )
+> 
+> xgb_prob_train <- as.numeric(predict(fit_xgb, dtrain))
+> xgb_prob_val <- as.numeric(predict(fit_xgb, dval))
+> xgb_prob_test <- as.numeric(predict(fit_xgb, dtest))
+> 
+> roc_xgb <- rbind(
++   make_roc_df(train_df$target, xgb_prob_train, "train", "xgboost", fraud_label),
++   make_roc_df(val_df$target, xgb_prob_val, "val", "xgboost", fraud_label),
++   make_roc_df(test_df$target, xgb_prob_test, "test", "xgboost", fraud_label)
++ )
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+> p_roc_xgb <- ggplot(roc_xgb, aes(x = fpr, y = tpr, color = dataset)) +
++   geom_line(linewidth = 0.9) +
++   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
++   theme_bw() +
++   ggtitle("XGBoost - ROC (Train/Val/Test)") +
++   xlab("False Positive Rate") +
++   ylab("True Positive Rate")
+> pdf(file.path(plots_dir, "qc_xgboost_roc.pdf"), width = 11, height = 8.5)
+> print(p_roc_xgb)
+> dev.off()
+null device 
+          1 
+> 
+> #############
+> # GLMNET    #
+> #############
+> 
+> ctrl_glmnet <- trainControl(method = "cv", number = 5, classProbs = TRUE)
+> fit_glmnet <- caret::train(
++   target ~ .,
++   data = train_df,
++   method = "glmnet",
++   family = "binomial",
++   preProcess = c("center", "scale"),
++   metric = "Accuracy",
++   trControl = ctrl_glmnet
++ )
+> 
+> glmnet_prob_train <- as.numeric(predict(fit_glmnet, newdata = train_df, type = "prob")[[fraud_label]])
+> glmnet_prob_val <- as.numeric(predict(fit_glmnet, newdata = val_df, type = "prob")[[fraud_label]])
+> glmnet_prob_test <- as.numeric(predict(fit_glmnet, newdata = test_df, type = "prob")[[fraud_label]])
+> 
+> #####################
+> # Models Comparison  #
+> #####################
+> 
+> models_probs <- list(
++   rpart = list(train = tree_prob_train, val = tree_prob_val, test = tree_prob_test),
++   knn = list(train = knn_prob_train, val = knn_prob_val, test = knn_prob_test),
++   rf = list(train = rf_prob_train, val = rf_prob_val, test = rf_prob_test),
++   nb = list(train = nb_prob_train, val = nb_prob_val, test = nb_prob_test),
++   xgboost = list(train = xgb_prob_train, val = xgb_prob_val, test = xgb_prob_test),
++   glmnet = list(train = glmnet_prob_train, val = glmnet_prob_val, test = glmnet_prob_test)
++ )
+> 
+> f1_rf_tr <- make_f1_threshold_df(train_df$target, rf_prob_train, fraud_label)
+> f1_rf_tr$dataset <- "train"
+> f1_rf_va <- make_f1_threshold_df(val_df$target, rf_prob_val, fraud_label)
+> f1_rf_va$dataset <- "val"
+> f1_rf_te <- make_f1_threshold_df(test_df$target, rf_prob_test, fraud_label)
+> f1_rf_te$dataset <- "test"
+> f1_rf_all <- rbind(f1_rf_tr, f1_rf_va, f1_rf_te)
+> p_f1_rf <- ggplot(f1_rf_all, aes(x = threshold, y = f1, color = dataset)) +
++   geom_line(linewidth = 0.9) +
++   theme_bw() +
++   ggtitle("Random Forest - F1 vs Threshold") +
++   xlab("Threshold") +
++   ylab("F1-score")
+> pdf(file.path(plots_dir, "qc_rf_f1_threshold.pdf"), width = 11, height = 8.5)
+> print(p_f1_rf)
+> dev.off()
+null device 
+          1 
+> 
+> f1_glm_tr <- make_f1_threshold_df(train_df$target, glmnet_prob_train, fraud_label)
+> f1_glm_tr$dataset <- "train"
+> f1_glm_va <- make_f1_threshold_df(val_df$target, glmnet_prob_val, fraud_label)
+> f1_glm_va$dataset <- "val"
+> f1_glm_te <- make_f1_threshold_df(test_df$target, glmnet_prob_test, fraud_label)
+> f1_glm_te$dataset <- "test"
+> f1_glm_all <- rbind(f1_glm_tr, f1_glm_va, f1_glm_te)
+> p_f1_glm <- ggplot(f1_glm_all, aes(x = threshold, y = f1, color = dataset)) +
++   geom_line(linewidth = 0.9) +
++   theme_bw() +
++   ggtitle("glmnet - F1 vs Threshold") +
++   xlab("Threshold") +
++   ylab("F1-score")
+> pdf(file.path(plots_dir, "qc_glmnet_f1_threshold.pdf"), width = 11, height = 8.5)
+> print(p_f1_glm)
+Warning message:
+Removed 39 rows containing missing values or values outside the scale range
+(`geom_line()`). 
+> dev.off()
+null device 
+          1 
+> 
+> metrics_rows <- list()
+> 
+> for (model_name in names(models_probs)) {
++   p_train <- models_probs[[model_name]]$train
++   p_val <- models_probs[[model_name]]$val
++   p_test <- models_probs[[model_name]]$test
++ 
++   roc_train <- make_roc_df(train_df$target, p_train, "train", model_name, fraud_label)
++   roc_val <- make_roc_df(val_df$target, p_val, "val", model_name, fraud_label)
++   roc_test <- make_roc_df(test_df$target, p_test, "test", model_name, fraud_label)
++ 
++   f1_on_val <- sapply(threshold_grid, function(th) {
++     compute_metrics(val_df$target, p_val, threshold = th, positive = fraud_label)$f1
++   })
++   f1_on_val[is.na(f1_on_val)] <- -Inf
++   best_threshold <- threshold_grid[which.max(f1_on_val)]
++ 
++   m_train <- compute_metrics(train_df$target, p_train, threshold = best_threshold, positive = fraud_label)
++   m_val <- compute_metrics(val_df$target, p_val, threshold = best_threshold, positive = fraud_label)
++   m_test <- compute_metrics(test_df$target, p_test, threshold = best_threshold, positive = fraud_label)
++ 
++   print_confusion_matrix(train_df$target, p_train, best_threshold, model_name, "train", fraud_label)
++   print_confusion_matrix(val_df$target, p_val, best_threshold, model_name, "val", fraud_label)
++   print_confusion_matrix(test_df$target, p_test, best_threshold, model_name, "test", fraud_label)
++ 
++   metrics_rows[[length(metrics_rows) + 1]] <- data.frame(
++     Model = model_name,
++     Dataset = "train",
++     ROC_AUC = roc_train$auc[1],
++     Best_Threshold_Val = best_threshold,
++     Recall = m_train$recall,
++     Precision = m_train$precision,
++     F1 = m_train$f1,
++     F2 = m_train$f2
++   )
++   metrics_rows[[length(metrics_rows) + 1]] <- data.frame(
++     Model = model_name,
++     Dataset = "val",
++     ROC_AUC = roc_val$auc[1],
++     Best_Threshold_Val = best_threshold,
++     Recall = m_val$recall,
++     Precision = m_val$precision,
++     F1 = m_val$f1,
++     F2 = m_val$f2
++   )
++   metrics_rows[[length(metrics_rows) + 1]] <- data.frame(
++     Model = model_name,
++     Dataset = "test",
++     ROC_AUC = roc_test$auc[1],
++     Best_Threshold_Val = best_threshold,
++     Recall = m_test$recall,
++     Precision = m_test$precision,
++     F1 = m_test$f1,
++     F2 = m_test$f2
++   )
++ }
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: rpart - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: rpart - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: rpart - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: knn - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT   278 20082
+  FRAUD    11  9630
+[1] "Confusion matrix: knn - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT    58  6729
+  FRAUD    31  3182
+[1] "Confusion matrix: knn - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT    80  6706
+  FRAUD    45  3168
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: rf - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: rf - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: rf - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: nb - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: nb - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: nb - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: xgboost - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: xgboost - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: xgboost - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+Setting levels: control = 0, case = 1
+[1] "Confusion matrix: glmnet - train (threshold = 0.3 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT    14 20346
+  FRAUD     8  9633
+[1] "Confusion matrix: glmnet - val (threshold = 0.3 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT    11  6776
+  FRAUD     3  3210
+[1] "Confusion matrix: glmnet - test (threshold = 0.3 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     5  6781
+  FRAUD     4  3209
+> 
+> perf <- dplyr::bind_rows(metrics_rows)
+> perf <- perf %>%
++   dplyr::mutate(
++     ROC_AUC = round(ROC_AUC, 4),
++     Best_Threshold_Val = round(Best_Threshold_Val, 3),
++     Recall = round(Recall, 4),
++     Precision = round(Precision, 4),
++     F1 = round(F1, 4),
++     F2 = round(F2, 4)
++   )
+> 
+> write.csv(perf, file.path(output_dir, "model_performance.csv"), row.names = FALSE)
+> 
+> print("Fraud mining completed")
+[1] "Fraud mining completed"
+
+
+
+
+##########################
+F2 experiment:
+##########################
+
+> 
+> # Set to FALSE to keep Risk_Score in dataset
+> DROP_RISK_SCORE <- TRUE
+> # Set to FALSE to keep Failed_Transaction_Count_7d in dataset
+> DROP_FAILED_TXN_COUNT_7D <- FALSE
+
+
+[1] "Confusion matrix: rpart - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: rpart - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: rpart - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+[1] "Confusion matrix: knn - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT   160 20200
+  FRAUD     3  9638
+[1] "Confusion matrix: knn - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT    33  6754
+  FRAUD     5  3208
+[1] "Confusion matrix: knn - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT    37  6749
+  FRAUD     5  3208
+[1] "Confusion matrix: rf - train (threshold = 0.7 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT    42 20318
+  FRAUD     0  9641
+[1] "Confusion matrix: rf - val (threshold = 0.7 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     5  6782
+  FRAUD     0  3213
+[1] "Confusion matrix: rf - test (threshold = 0.7 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT    14  6772
+  FRAUD     1  3212
+[1] "Confusion matrix: nnet - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: nnet - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: nnet - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+[1] "Confusion matrix: nb - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     1 20359
+  FRAUD     0  9641
+[1] "Confusion matrix: nb - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: nb - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+[1] "Confusion matrix: multinom - train (threshold = 0.2 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     1 20359
+  FRAUD     0  9641
+[1] "Confusion matrix: multinom - val (threshold = 0.2 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     3  6784
+  FRAUD     0  3213
+[1] "Confusion matrix: multinom - test (threshold = 0.2 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     1  6785
+  FRAUD     0  3213
+[1] "Confusion matrix: xgboost - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: xgboost - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: xgboost - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+[1] "Confusion matrix: glmnet - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: glmnet - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: glmnet - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+[1] "Confusion matrix: iforest - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: iforest - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: iforest - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+
+========== MODEL METRICS SUMMARY ==========
+> print(perf[, c("Model", "Dataset", "ROC_AUC", "Best_Threshold_Val", "Recall", "Precision", "F1", "F2")])
+      Model Dataset ROC_AUC Best_Threshold_Val Recall Precision     F1     F2
+1     rpart   train  0.8110               0.05 1.0000    0.3214 0.4864 0.7031
+2     rpart     val  0.8075               0.05 1.0000    0.3213 0.4863 0.7030
+3     rpart    test  0.8084               0.05 1.0000    0.3213 0.4864 0.7030
+4       knn   train  0.7376               0.05 0.9997    0.3230 0.4883 0.7045
+5       knn     val  0.6259               0.05 0.9984    0.3220 0.4870 0.7031
+6       knn    test  0.6245               0.05 0.9984    0.3222 0.4872 0.7032
+7        rf   train  0.8469               0.70 1.0000    0.3218 0.4869 0.7035
+8        rf     val  0.7827               0.70 1.0000    0.3215 0.4865 0.7032
+9        rf    test  0.7845               0.70 0.9997    0.3217 0.4868 0.7033
+10     nnet   train  0.5034               0.05 1.0000    0.3214 0.4864 0.7031
+11     nnet     val  0.8078               0.05 1.0000    0.3213 0.4863 0.7030
+12     nnet    test  0.8114               0.05 1.0000    0.3213 0.4864 0.7030
+13       nb   train  0.8115               0.05 1.0000    0.3214 0.4864 0.7031
+14       nb     val  0.8036               0.05 1.0000    0.3213 0.4863 0.7030
+15       nb    test  0.8035               0.05 1.0000    0.3213 0.4864 0.7030
+16 multinom   train  0.8145               0.20 1.0000    0.3214 0.4864 0.7031
+17 multinom     val  0.8047               0.20 1.0000    0.3214 0.4864 0.7031
+18 multinom    test  0.8060               0.20 1.0000    0.3214 0.4864 0.7031
+19  xgboost   train  0.8529               0.05 1.0000    0.3214 0.4864 0.7031
+20  xgboost     val  0.8057               0.05 1.0000    0.3213 0.4863 0.7030
+21  xgboost    test  0.8127               0.05 1.0000    0.3213 0.4864 0.7030
+22   glmnet   train  0.8123               0.05 1.0000    0.3214 0.4864 0.7031
+23   glmnet     val  0.8060               0.05 1.0000    0.3213 0.4863 0.7030
+24   glmnet    test  0.8057               0.05 1.0000    0.3213 0.4864 0.7030
+25  iforest   train  0.5478               0.05 1.0000    0.3214 0.4864 0.7031
+26  iforest     val  0.5544               0.05 1.0000    0.3213 0.4863 0.7030
+27  iforest    test  0.5518               0.05 1.0000    0.3213 0.4864 0.7030
+> cat("===========================================\n")
+===========================================
+> 
+>
+> # Set to FALSE to keep Risk_Score in dataset
+> DROP_RISK_SCORE <- TRUE
+> # Set to FALSE to keep Failed_Transaction_Count_7d in dataset
+> DROP_FAILED_TXN_COUNT_7D <- FALSE
+> 
+
+
+[1] "Confusion matrix: rpart - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: rpart - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: rpart - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+[1] "Confusion matrix: knn - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT   840 19520
+  FRAUD    16  9625
+[1] "Confusion matrix: knn - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT   207  6580
+  FRAUD    40  3173
+[1] "Confusion matrix: knn - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT   238  6548
+  FRAUD    42  3171
+[1] "Confusion matrix: rf - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: rf - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: rf - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+[1] "Confusion matrix: nnet - train (threshold = 0.15 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT    10 20350
+  FRAUD    10  9631
+[1] "Confusion matrix: nnet - val (threshold = 0.15 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT    10  6777
+  FRAUD     2  3211
+[1] "Confusion matrix: nnet - test (threshold = 0.15 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT    12  6774
+  FRAUD     1  3212
+[1] "Confusion matrix: nb - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: nb - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: nb - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+[1] "Confusion matrix: multinom - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: multinom - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: multinom - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+[1] "Confusion matrix: xgboost - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: xgboost - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: xgboost - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+[1] "Confusion matrix: glmnet - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: glmnet - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: glmnet - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
+[1] "Confusion matrix: iforest - train (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0 20360
+  FRAUD     0  9641
+[1] "Confusion matrix: iforest - val (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6787
+  FRAUD     0  3213
+[1] "Confusion matrix: iforest - test (threshold = 0.05 )"
+       Pred
+True    LEGIT FRAUD
+  LEGIT     0  6786
+  FRAUD     0  3213
